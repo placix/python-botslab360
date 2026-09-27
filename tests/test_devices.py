@@ -123,6 +123,48 @@ def test_get_devices_requires_authentication() -> None:
     run(scenario())
 
 
+def test_get_devices_refreshes_expired_sid_once() -> None:
+    async def scenario() -> None:
+        login_count = 0
+        discovery_cookies: list[str] = []
+        task_ids: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_count
+            if request.url.path == "/common/user/login":
+                login_count += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "errno": 0,
+                        "data": {
+                            "sid": f"synthetic-smart-sid-{login_count}",
+                            "pushKey": f"synthetic-push-key-{login_count}",
+                        },
+                    },
+                )
+
+            discovery_cookies.append(request.headers["cookie"])
+            form = parse_qs((await request.aread()).decode())
+            task_ids.append(form["taskid"][0])
+            if len(discovery_cookies) == 1:
+                return httpx.Response(200, json={"errno": 102})
+            return httpx.Response(200, json={"errno": 0, "data": {"list": []}})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            await client.authenticate()
+            assert await client.get_devices() == []
+
+        assert login_count == 2
+        assert len(discovery_cookies) == 2
+        assert "sid=synthetic-smart-sid-1" in discovery_cookies[0]
+        assert "sid=synthetic-smart-sid-2" in discovery_cookies[1]
+        assert task_ids[0] == task_ids[1]
+
+    run(scenario())
+
+
 @pytest.mark.parametrize(
     ("errno", "exception_type"),
     [(102, InvalidSessionError), (103, AuthenticationError), (999, ApiError)],

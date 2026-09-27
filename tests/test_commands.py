@@ -179,3 +179,104 @@ def test_command_does_not_include_response_body_in_http_error() -> None:
             assert secret_body not in str(raised.value)
 
     run(scenario())
+
+
+def test_command_refreshes_expired_session_once_and_retries() -> None:
+    async def scenario() -> None:
+        login_count = 0
+        command_cookies: list[str] = []
+        command_task_ids: list[str] = []
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_count
+            if request.url.path == "/common/user/login":
+                login_count += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "errno": 0,
+                        "data": {
+                            "sid": f"synthetic-sid-{login_count}",
+                            "pushKey": f"synthetic-push-key-{login_count}",
+                        },
+                    },
+                )
+
+            command_cookies.append(request.headers["cookie"])
+            form = parse_qs((await request.aread()).decode())
+            command_task_ids.append(form["taskid"][0])
+            return httpx.Response(
+                200,
+                json={"errno": 102 if len(command_cookies) == 1 else 0},
+            )
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            await client.authenticate()
+            await client.pause(DEVICE)
+
+        assert login_count == 2
+        assert len(command_cookies) == 2
+        assert "sid=synthetic-sid-1" in command_cookies[0]
+        assert "sid=synthetic-sid-2" in command_cookies[1]
+        assert command_task_ids[0] == command_task_ids[1]
+
+    run(scenario())
+
+
+def test_session_refresh_propagates_authentication_error_without_retry() -> None:
+    async def scenario() -> None:
+        login_count = 0
+        command_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_count, command_count
+            if request.url.path == "/common/user/login":
+                login_count += 1
+                if login_count == 1:
+                    return login_response()
+                return httpx.Response(200, json={"errno": 103})
+
+            command_count += 1
+            return httpx.Response(200, json={"errno": 102})
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            await client.authenticate()
+            with pytest.raises(AuthenticationError) as raised:
+                await client.pause(DEVICE)
+
+        assert raised.value.errno == 103
+        assert login_count == 2
+        assert command_count == 1
+
+    run(scenario())
+
+
+def test_command_does_not_refresh_for_other_api_errors() -> None:
+    async def scenario() -> None:
+        login_count = 0
+        command_count = 0
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_count, command_count
+            if request.url.path == "/common/user/login":
+                login_count += 1
+                return login_response()
+            command_count += 1
+            return httpx.Response(200, json={"errno": 212})
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            await client.authenticate()
+            with pytest.raises(ApiError) as raised:
+                await client.pause(DEVICE)
+
+        assert raised.value.errno == 212
+        assert login_count == 1
+        assert command_count == 1
+
+    run(scenario())

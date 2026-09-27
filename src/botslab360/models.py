@@ -49,6 +49,18 @@ class RobotStatus:
     state: str | None
     charging: bool | None
     fan_mode: str | None
-    cleaned_area: int | None
-    cleaning_time: int | None
+    cleaned_area_m2: int | None
+    cleaning_time_seconds: int | None
     error_code: int
+
+    @property
+    def cleaned_area(self) -> int | None:
+        """Return cleaned square meters using the pre-1.0 field name."""
+
+        return self.cleaned_area_m2
+
+    @property
+    def cleaning_time(self) -> int | None:
+        """Return cleaning seconds using the pre-1.0 field name."""
+
+        return self.cleaning_time_seconds

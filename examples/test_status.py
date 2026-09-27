@@ -63,10 +63,10 @@ async def read_status(q: str, t: str) -> int:
         print(f"Online: {status.online}")
     if status.fan_mode is not None:
         print(f"Fan mode: {status.fan_mode}")
-    if status.cleaned_area is not None:
-        print(f"Cleaned area: {status.cleaned_area}")
-    if status.cleaning_time is not None:
-        print(f"Cleaning time: {status.cleaning_time}")
+    if status.cleaned_area_m2 is not None:
+        print(f"Cleaned area: {status.cleaned_area_m2} m2")
+    if status.cleaning_time_seconds is not None:
+        print(f"Cleaning time: {status.cleaning_time_seconds} s")
     print(f"Error code: {status.error_code}")
     return 0
 

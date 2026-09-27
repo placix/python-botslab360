@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+import hashlib
+from collections.abc import Awaitable, Callable, Mapping
 from numbers import Integral
-from typing import Any
+from typing import Any, TypeVar
 from uuid import uuid4
 
 import httpx
@@ -29,6 +30,7 @@ from .protocol import (
 
 DEVICE_LIST_PATH = "/common/dev/GetList"
 COMMAND_PATH = "/clean/cmd/send"
+_ResultT = TypeVar("_ResultT")
 
 
 def _numeric_api_code(value: Any, *, status_code: int) -> int:
@@ -139,6 +141,9 @@ class Botslab360Client:
         self._owns_http_client = http_client is None
         self._base_url = base_url.rstrip("/")
         self._language = language
+        self._account_fingerprint = hashlib.sha256(
+            f"botslab360:{self._credentials.qid}".encode("utf-8")
+        ).hexdigest()
         self._push_host = push_host
         self._push_port = push_port
         self._auth = BotslabAuth(
@@ -152,6 +157,12 @@ class Botslab360Client:
     def session(self) -> SmartSession | None:
         return self._session
 
+    @property
+    def account_fingerprint(self) -> str:
+        """Return a stable account identifier that does not expose the qid."""
+
+        return self._account_fingerprint
+
     async def authenticate(
         self,
         *,
@@ -164,6 +175,12 @@ class Botslab360Client:
         return self._session
 
     async def get_devices(self) -> list[Device]:
+        task_id = str(uuid4())
+        return await self._with_session_refresh(
+            lambda: self._get_devices_once(task_id=task_id)
+        )
+
+    async def _get_devices_once(self, *, task_id: str) -> list[Device]:
         if self._session is None:
             raise AuthenticationError(
                 "Authentication is required before device discovery",
@@ -186,7 +203,7 @@ class Botslab360Client:
             "devType": "3",
             "from": "mpc_ios",
             "lang": self._language,
-            "taskid": str(uuid4()),
+            "taskid": task_id,
         }
 
         try:
@@ -284,6 +301,27 @@ class Botslab360Client:
             raise ValueError("device_id must be a non-empty string")
 
         task_id = str(uuid4())
+        return await self._with_session_refresh(
+            lambda: self._get_status_once(
+                device_id=device_id,
+                task_id=task_id,
+                timeout=timeout,
+            )
+        )
+
+    async def _get_status_once(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        timeout: float,
+    ) -> RobotStatus:
+        if self._session is None:
+            raise AuthenticationError(
+                "Authentication is required before requesting robot status",
+                phase="authentication",
+            )
+
         push = PushClient(
             self._session.sid,
             self._session.push_key,
@@ -330,13 +368,26 @@ class Botslab360Client:
         operation: str,
     ) -> None:
         task_id = str(uuid4()) if command.requires_task_id else None
-        await self._post_robot_request(
-            device_id=_device_id(device),
-            info_type=command.info_type,
-            data=command.data,
-            task_id=task_id,
-            operation=operation,
+        device_id = _device_id(device)
+        await self._with_session_refresh(
+            lambda: self._post_robot_request(
+                device_id=device_id,
+                info_type=command.info_type,
+                data=command.data,
+                task_id=task_id,
+                operation=operation,
+            )
         )
+
+    async def _with_session_refresh(
+        self,
+        operation: Callable[[], Awaitable[_ResultT]],
+    ) -> _ResultT:
+        try:
+            return await operation()
+        except InvalidSessionError:
+            await self.authenticate()
+            return await operation()
 
     async def _request_status(self, *, device_id: str, task_id: str) -> None:
         await self._post_robot_request(

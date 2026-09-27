@@ -39,8 +39,8 @@ def test_get_status_connects_push_before_sending_http_request(monkeypatch) -> No
             state="charge",
             charging=True,
             fan_mode="quiet",
-            cleaned_area=4200,
-            cleaning_time=1800,
+            cleaned_area_m2=4200,
+            cleaning_time_seconds=1800,
             error_code=0,
         )
 
@@ -170,5 +170,79 @@ def test_status_http_api_error_closes_push(monkeypatch) -> None:
             assert raised.value.phase == "api"
 
         assert closed is True
+
+    run(scenario())
+
+
+def test_status_refresh_reopens_push_with_new_session(monkeypatch) -> None:
+    async def scenario() -> None:
+        login_count = 0
+        status_requests = 0
+        push_sessions: list[tuple[str, str]] = []
+        task_ids: list[str] = []
+        expected_status = RobotStatus(
+            device_id="synthetic-device-1",
+            online=True,
+            battery=73,
+            state="idle",
+            charging=False,
+            fan_mode="auto",
+            cleaned_area_m2=12,
+            cleaning_time_seconds=300,
+            error_code=0,
+        )
+
+        class FakePushClient:
+            def __init__(self, sid, push_key, *, host, port):
+                push_sessions.append((sid, push_key))
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                pass
+
+            async def wait_for_status(self, **kwargs):
+                return expected_status
+
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal login_count, status_requests
+            if request.url.path == "/common/user/login":
+                login_count += 1
+                return httpx.Response(
+                    200,
+                    json={
+                        "errno": 0,
+                        "data": {
+                            "sid": f"synthetic-sid-{login_count}",
+                            "pushKey": f"synthetic-push-key-{login_count}",
+                        },
+                    },
+                )
+
+            status_requests += 1
+            form = parse_qs((await request.aread()).decode())
+            task_ids.append(form["taskid"][0])
+            return httpx.Response(
+                200,
+                json={"errno": 102 if status_requests == 1 else 0},
+            )
+
+        transport = httpx.MockTransport(handler)
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            await client.authenticate()
+            status = await client.get_status("synthetic-device-1")
+
+        assert status == expected_status
+        assert login_count == 2
+        assert status_requests == 2
+        assert push_sessions == [
+            ("synthetic-sid-1", "synthetic-push-key-1"),
+            ("synthetic-sid-2", "synthetic-push-key-2"),
+        ]
+        assert task_ids[0] == task_ids[1]
 
     run(scenario())

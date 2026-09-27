@@ -80,6 +80,8 @@ def test_parse_status_event_returns_typed_status() -> None:
     assert status.state == "charge"
     assert status.charging is True
     assert status.fan_mode == "quiet"
+    assert status.cleaned_area_m2 == 4200
+    assert status.cleaning_time_seconds == 1800
     assert status.cleaned_area == 4200
     assert status.cleaning_time == 1800
     assert status.error_code == 0

@@ -152,8 +152,11 @@ def parse_status_event(
         state=state,
         charging=state in {"charge", "fullcharge"} if state is not None else None,
         fan_mode=fan_mode,
-        cleaned_area=_optional_int(status.get("cleanArea"), field="cleanArea"),
-        cleaning_time=_optional_int(status.get("cleanTime"), field="cleanTime"),
+        cleaned_area_m2=_optional_int(status.get("cleanArea"), field="cleanArea"),
+        cleaning_time_seconds=_optional_int(
+            status.get("cleanTime"),
+            field="cleanTime",
+        ),
         error_code=error_code,
     )
 

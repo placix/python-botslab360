@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 from urllib.parse import parse_qs
 from uuid import UUID
@@ -27,6 +28,23 @@ T_ENCODED = "s%3Dsynthetic-session%26t%3D1700000000%26v%3D2.0"
 
 def run(coro):
     return asyncio.run(coro)
+
+
+def test_client_exposes_stable_account_fingerprint_without_qid() -> None:
+    async def scenario() -> None:
+        transport = httpx.MockTransport(
+            lambda request: pytest.fail("No HTTP request expected")
+        )
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            first = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
+            second = Botslab360Client(Q_ENCODED, T_ENCODED, http_client=http_client)
+
+        expected = hashlib.sha256(f"botslab360:{QID}".encode()).hexdigest()
+        assert first.account_fingerprint == expected
+        assert second.account_fingerprint == expected
+        assert QID not in first.account_fingerprint
+
+    run(scenario())
 
 
 def test_derive_qid_from_raw_and_url_encoded_q() -> None:
