@@ -1,0 +1,13 @@
+README.md
+pyproject.toml
+src/botslab360/__init__.py
+src/botslab360/auth.py
+src/botslab360/client.py
+src/botslab360/exceptions.py
+src/botslab360/models.py
+src/botslab360.egg-info/PKG-INFO
+src/botslab360.egg-info/SOURCES.txt
+src/botslab360.egg-info/dependency_links.txt
+src/botslab360.egg-info/requires.txt
+src/botslab360.egg-info/top_level.txt
+tests/test_auth.py
