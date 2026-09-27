@@ -10,6 +10,14 @@ from uuid import uuid4
 import httpx
 
 from .auth import SMART_HOME_BASE_URL, BotslabAuth, credentials_from_tokens
+from .commands import (
+    LOCATE,
+    PAUSE,
+    RESUME,
+    RETURN_TO_DOCK,
+    START_CLEANING,
+    CommandSpec,
+)
 from .exceptions import ApiError, AuthenticationError, InvalidSessionError
 from .models import Device, QihooCredentials, RobotStatus, SmartSession
 from .protocol import (
@@ -26,7 +34,7 @@ COMMAND_PATH = "/clean/cmd/send"
 def _numeric_api_code(value: Any, *, status_code: int) -> int:
     if isinstance(value, bool):
         raise ApiError(
-            "Device list response contains an invalid errno",
+            "Smart Home response contains an invalid errno",
             status_code=status_code,
             phase="response-validation",
         )
@@ -37,7 +45,7 @@ def _numeric_api_code(value: Any, *, status_code: int) -> int:
         if normalized.lstrip("+-").isdigit():
             return int(normalized)
     raise ApiError(
-        "Device list response contains an invalid errno",
+        "Smart Home response contains an invalid errno",
         status_code=status_code,
         phase="response-validation",
     )
@@ -104,8 +112,15 @@ def _device_from_payload(payload: object, *, status_code: int) -> Device:
     return Device(id=device_id, name=name, model=model, online=is_online)
 
 
+def _device_id(device: Device | str) -> str:
+    device_id = device.id if isinstance(device, Device) else device
+    if not isinstance(device_id, str) or not device_id:
+        raise ValueError("device must contain a non-empty id")
+    return device_id
+
+
 class Botslab360Client:
-    """Client facade for authentication, discovery, and read-only status."""
+    """Client facade for authentication, discovery, status, and basic commands."""
 
     def __init__(
         self,
@@ -283,10 +298,67 @@ class Botslab360Client:
                 timeout=timeout,
             )
 
+    async def start_cleaning(self, device: Device | str) -> None:
+        """Request one whole-home smart cleaning run."""
+
+        await self._execute_command(device, START_CLEANING, "start cleaning")
+
+    async def pause(self, device: Device | str) -> None:
+        """Pause the current cleaning run."""
+
+        await self._execute_command(device, PAUSE, "pause cleaning")
+
+    async def resume(self, device: Device | str) -> None:
+        """Resume a paused cleaning run."""
+
+        await self._execute_command(device, RESUME, "resume cleaning")
+
+    async def return_to_dock(self, device: Device | str) -> None:
+        """Request that the robot return to its charging dock."""
+
+        await self._execute_command(device, RETURN_TO_DOCK, "return to dock")
+
+    async def locate(self, device: Device | str) -> None:
+        """Ask the robot to identify its location audibly."""
+
+        await self._execute_command(device, LOCATE, "locate robot")
+
+    async def _execute_command(
+        self,
+        device: Device | str,
+        command: CommandSpec,
+        operation: str,
+    ) -> None:
+        task_id = str(uuid4()) if command.requires_task_id else None
+        await self._post_robot_request(
+            device_id=_device_id(device),
+            info_type=command.info_type,
+            data=command.data,
+            task_id=task_id,
+            operation=operation,
+        )
+
     async def _request_status(self, *, device_id: str, task_id: str) -> None:
+        await self._post_robot_request(
+            device_id=device_id,
+            info_type=STATUS_INFO_TYPE,
+            data="",
+            task_id=task_id,
+            operation="robot status request",
+        )
+
+    async def _post_robot_request(
+        self,
+        *,
+        device_id: str,
+        info_type: str,
+        data: str,
+        task_id: str | None,
+        operation: str,
+    ) -> None:
         if self._session is None:
             raise AuthenticationError(
-                "Authentication is required before requesting robot status",
+                "Authentication is required before communicating with a robot",
                 phase="authentication",
             )
 
@@ -303,14 +375,15 @@ class Botslab360Client:
         }
         form = {
             "countryId": "DE",
-            "data": "",
+            "data": data,
             "devType": "3",
             "from": "mpc_ios",
-            "infoType": STATUS_INFO_TYPE,
+            "infoType": info_type,
             "lang": self._language,
             "sn": device_id,
-            "taskid": task_id,
         }
+        if task_id is not None:
+            form["taskid"] = task_id
 
         try:
             response = await self._http_client.post(
@@ -321,24 +394,27 @@ class Botslab360Client:
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
             raise ApiError(
-                "Status request returned an HTTP error",
+                f"{operation.capitalize()} returned an HTTP error",
                 status_code=exc.response.status_code,
                 phase="http",
             ) from exc
         except httpx.RequestError as exc:
-            raise ApiError("Status request failed", phase="transport") from exc
+            raise ApiError(
+                f"{operation.capitalize()} failed",
+                phase="transport",
+            ) from exc
 
         try:
             payload = response.json()
         except ValueError as exc:
             raise ApiError(
-                "Status request returned invalid JSON",
+                f"{operation.capitalize()} returned invalid JSON",
                 status_code=response.status_code,
                 phase="json",
             ) from exc
         if not isinstance(payload, dict):
             raise ApiError(
-                "Status request returned an invalid response",
+                f"{operation.capitalize()} returned an invalid response",
                 status_code=response.status_code,
                 phase="response-validation",
             )
@@ -359,7 +435,7 @@ class Botslab360Client:
         if errno != 0:
             _raise_smart_api_error(
                 errno,
-                operation="robot status request",
+                operation=operation,
                 status_code=response.status_code,
                 response_errno=response_errno,
                 error_code=error_code,
