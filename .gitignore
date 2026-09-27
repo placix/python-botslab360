@@ -1,0 +1,20 @@
+@"
+# Python
+__pycache__/
+*.py[cod]
+
+# Packaging / build artifacts
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+.release-test/
+.pypi-test/
+
+# Test/cache
+.pytest_cache/
+.coverage
+htmlcov/
+"@ | Add-Content .gitignore
