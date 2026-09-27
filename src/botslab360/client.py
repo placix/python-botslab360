@@ -11,9 +11,16 @@ import httpx
 
 from .auth import SMART_HOME_BASE_URL, BotslabAuth, credentials_from_tokens
 from .exceptions import ApiError, AuthenticationError, InvalidSessionError
-from .models import Device, QihooCredentials, SmartSession
+from .models import Device, QihooCredentials, RobotStatus, SmartSession
+from .protocol import (
+    DEFAULT_PUSH_HOST,
+    DEFAULT_PUSH_PORT,
+    STATUS_INFO_TYPE,
+    PushClient,
+)
 
 DEVICE_LIST_PATH = "/common/dev/GetList"
+COMMAND_PATH = "/clean/cmd/send"
 
 
 def _numeric_api_code(value: Any, *, status_code: int) -> int:
@@ -36,9 +43,10 @@ def _numeric_api_code(value: Any, *, status_code: int) -> int:
     )
 
 
-def _raise_device_api_error(
+def _raise_smart_api_error(
     errno: int,
     *,
+    operation: str,
     status_code: int,
     response_errno: int,
     error_code: int | None,
@@ -54,7 +62,7 @@ def _raise_device_api_error(
         raise InvalidSessionError("Smart Home session has expired", **details)
     if errno == 103:
         raise AuthenticationError("Qihoo Q/T session is unauthorized", **details)
-    raise ApiError("Smart Home API rejected device discovery", **details)
+    raise ApiError(f"Smart Home API rejected {operation}", **details)
 
 
 def _device_from_payload(payload: object, *, status_code: int) -> Device:
@@ -97,7 +105,7 @@ def _device_from_payload(payload: object, *, status_code: int) -> Device:
 
 
 class Botslab360Client:
-    """Client facade for authentication and device discovery."""
+    """Client facade for authentication, discovery, and read-only status."""
 
     def __init__(
         self,
@@ -108,12 +116,16 @@ class Botslab360Client:
         base_url: str = SMART_HOME_BASE_URL,
         language: str = "de_DE",
         timeout: float = 30.0,
+        push_host: str = DEFAULT_PUSH_HOST,
+        push_port: int = DEFAULT_PUSH_PORT,
     ) -> None:
         self._credentials: QihooCredentials = credentials_from_tokens(q, t)
         self._http_client = http_client or httpx.AsyncClient(timeout=timeout)
         self._owns_http_client = http_client is None
         self._base_url = base_url.rstrip("/")
         self._language = language
+        self._push_host = push_host
+        self._push_port = push_port
         self._auth = BotslabAuth(
             self._http_client,
             base_url=base_url,
@@ -207,8 +219,9 @@ class Botslab360Client:
             if error_code != 0:
                 errno = error_code
         if errno != 0:
-            _raise_device_api_error(
+            _raise_smart_api_error(
                 errno,
+                operation="device discovery",
                 status_code=response.status_code,
                 response_errno=response_errno,
                 error_code=error_code,
@@ -238,6 +251,119 @@ class Botslab360Client:
             _device_from_payload(device, status_code=response.status_code)
             for device in devices
         ]
+
+    async def get_status(
+        self,
+        device_id: str,
+        *,
+        timeout: float = 30.0,
+    ) -> RobotStatus:
+        """Request and await one current status push for a robot."""
+
+        if self._session is None:
+            raise AuthenticationError(
+                "Authentication is required before requesting robot status",
+                phase="authentication",
+            )
+        if not isinstance(device_id, str) or not device_id:
+            raise ValueError("device_id must be a non-empty string")
+
+        task_id = str(uuid4())
+        push = PushClient(
+            self._session.sid,
+            self._session.push_key,
+            host=self._push_host,
+            port=self._push_port,
+        )
+        async with push:
+            await self._request_status(device_id=device_id, task_id=task_id)
+            return await push.wait_for_status(
+                device_id=device_id,
+                task_id=task_id,
+                timeout=timeout,
+            )
+
+    async def _request_status(self, *, device_id: str, task_id: str) -> None:
+        if self._session is None:
+            raise AuthenticationError(
+                "Authentication is required before requesting robot status",
+                phase="authentication",
+            )
+
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Cookie": (
+                f"q={self._credentials.q};t={self._credentials.t};"
+                f"qid={self._credentials.qid};sid={self._session.sid}"
+            ),
+            "User-Agent": "QihooSuperApp_NoPods/11.1.0 (iPhone; iOS 14.8; Scale/3.00)",
+            "Accept-Language": "de-DE;q=1, uk-DE;q=0.9, en-DE;q=0.8",
+        }
+        form = {
+            "countryId": "DE",
+            "data": "",
+            "devType": "3",
+            "from": "mpc_ios",
+            "infoType": STATUS_INFO_TYPE,
+            "lang": self._language,
+            "sn": device_id,
+            "taskid": task_id,
+        }
+
+        try:
+            response = await self._http_client.post(
+                f"{self._base_url}{COMMAND_PATH}",
+                data=form,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ApiError(
+                "Status request returned an HTTP error",
+                status_code=exc.response.status_code,
+                phase="http",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ApiError("Status request failed", phase="transport") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ApiError(
+                "Status request returned invalid JSON",
+                status_code=response.status_code,
+                phase="json",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ApiError(
+                "Status request returned an invalid response",
+                status_code=response.status_code,
+                phase="response-validation",
+            )
+
+        response_errno = _numeric_api_code(
+            payload.get("errno"),
+            status_code=response.status_code,
+        )
+        errno = response_errno
+        error_code = None
+        if "errorCode" in payload:
+            error_code = _numeric_api_code(
+                payload["errorCode"],
+                status_code=response.status_code,
+            )
+            if error_code != 0:
+                errno = error_code
+        if errno != 0:
+            _raise_smart_api_error(
+                errno,
+                operation="robot status request",
+                status_code=response.status_code,
+                response_errno=response_errno,
+                error_code=error_code,
+            )
 
     async def close(self) -> None:
         if self._owns_http_client:

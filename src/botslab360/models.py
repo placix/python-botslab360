@@ -37,3 +37,18 @@ class Device:
     name: str
     model: str
     online: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RobotStatus:
+    """Read-only status reported by a Botslab/360 robot."""
+
+    device_id: str
+    online: bool | None
+    battery: int | None
+    state: str | None
+    charging: bool | None
+    fan_mode: str | None
+    cleaned_area: int | None
+    cleaning_time: int | None
+    error_code: int

@@ -4,6 +4,7 @@ Version: 0.1.0
 Summary: Async authentication client for Botslab/360 smart-home devices
 License: MIT
 Requires-Python: >=3.10
+Requires-Dist: cryptography>=42
 Requires-Dist: httpx<1,>=0.27
 Provides-Extra: test
 Requires-Dist: pytest>=8; extra == "test"

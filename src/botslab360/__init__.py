@@ -8,7 +8,7 @@ from .exceptions import (
     Botslab360Error,
     InvalidSessionError,
 )
-from .models import Device, QihooCredentials, SmartSession
+from .models import Device, QihooCredentials, RobotStatus, SmartSession
 
 __all__ = [
     "ApiError",
@@ -19,6 +19,7 @@ __all__ = [
     "Device",
     "InvalidSessionError",
     "QihooCredentials",
+    "RobotStatus",
     "SmartSession",
     "credentials_from_tokens",
     "derive_qid",
