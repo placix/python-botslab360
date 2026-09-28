@@ -6,19 +6,34 @@ from .exceptions import (
     ApiError,
     AuthenticationError,
     Botslab360Error,
+    CaptchaRequired,
     InvalidSessionError,
+    QucAuthenticationError,
 )
-from .models import Device, QihooCredentials, RobotStatus, SmartSession
+from .models import (
+    AuthBackend,
+    CaptchaChallenge,
+    Device,
+    DeviceIdentity,
+    QihooCredentials,
+    RobotStatus,
+    SmartSession,
+)
 
 __all__ = [
     "ApiError",
+    "AuthBackend",
     "AuthenticationError",
     "Botslab360Client",
     "Botslab360Error",
     "BotslabAuth",
+    "CaptchaChallenge",
+    "CaptchaRequired",
     "Device",
+    "DeviceIdentity",
     "InvalidSessionError",
     "QihooCredentials",
+    "QucAuthenticationError",
     "RobotStatus",
     "SmartSession",
     "credentials_from_tokens",

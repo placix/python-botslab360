@@ -2,7 +2,69 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from enum import Enum
+from uuid import UUID, uuid4
+
+
+_HEX_32 = re.compile(r"[0-9a-f]{32}")
+_HEX_16 = re.compile(r"[0-9a-f]{16}")
+
+
+class AuthBackend(str, Enum):
+    """Account backend used for headless credential authentication."""
+
+    BOTSLAB = "botslab"
+    ROBOT360 = "robot360"
+
+
+@dataclass(frozen=True, slots=True)
+class DeviceIdentity:
+    """Stable, non-secret identity used for account risk assessment."""
+
+    mid: str
+    android_id: str
+    m2: str
+
+    def __post_init__(self) -> None:
+        if _HEX_32.fullmatch(self.mid) is None:
+            raise ValueError("mid must contain 32 lowercase hexadecimal characters")
+        if _HEX_16.fullmatch(self.android_id) is None:
+            raise ValueError(
+                "android_id must contain 16 lowercase hexadecimal characters"
+            )
+        try:
+            parsed_m2 = UUID(self.m2)
+        except (ValueError, AttributeError) as exc:
+            raise ValueError("m2 must be a canonical UUID") from exc
+        if str(parsed_m2) != self.m2:
+            raise ValueError("m2 must be a canonical UUID")
+
+    @classmethod
+    def generate(cls) -> "DeviceIdentity":
+        """Generate an identity that callers should persist and reuse."""
+
+        return cls(
+            mid=uuid4().hex,
+            android_id=uuid4().hex[:16],
+            m2=str(uuid4()),
+        )
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class CaptchaChallenge:
+    """A graphic captcha image and its opaque continuation token."""
+
+    image: bytes
+    sc: str
+    captcha_type: str = "graph"
+
+    def __repr__(self) -> str:
+        return (
+            "CaptchaChallenge(image=<redacted>, sc=<redacted>, "
+            f"captcha_type={self.captcha_type!r})"
+        )
 
 
 @dataclass(frozen=True, slots=True, repr=False)

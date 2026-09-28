@@ -6,13 +6,14 @@ This project provides an unofficial Python interface for selected 360 robot vacu
 
 > [!WARNING]
 > This project is unofficial and not affiliated with Botslab, Qihoo 360 or 360 Smart Home.
-> Version `0.1.0` should be considered experimental.
+> Version `0.2.0` should be considered experimental.
 
 ## Features
 
 Currently implemented:
 
 - Qihoo `Q` / `T` session authentication
+- Optional headless Qihoo email/password authentication
 - Automatic `qid` derivation
 - Smart Home login and session handling
 - Automatic Smart Home SID refresh
@@ -42,7 +43,7 @@ Python 3.10 or newer is required.
 
 ## Authentication
 
-The library currently uses authenticated Qihoo 360 account session tokens:
+The existing authentication path uses Qihoo 360 account session tokens:
 
 - `Q`
 - `T`
@@ -59,7 +60,65 @@ Never publish or log:
 - `sid`
 - `pushKey`
 
-The library does not implement automatic captcha solving or the proprietary Qihoo Account SDK.
+Alternatively, the library can obtain Q/T with an email/password QUC login.
+There are two separate account backends, selected explicitly with
+`AuthBackend`. They are never tried as automatic fallbacks for each other.
+
+For a Botslab / CloudSmart account, the existing regional backend remains the
+default. Omitting `backend` is equivalent to `AuthBackend.BOTSLAB`, and omitting
+`region` continues to select `eu1`:
+
+```python
+from botslab360 import AuthBackend, Botslab360Client, DeviceIdentity
+
+identity = DeviceIdentity.generate()
+client = Botslab360Client.from_credentials(
+    "user@example.com",
+    "YOUR_PASSWORD",
+    backend=AuthBackend.BOTSLAB,
+    region="eu1",
+    device_identity=identity,
+)
+```
+
+For an account from the original 360Robot application, select the non-regional
+backend. Passing `region` with this backend is rejected:
+
+```python
+client = Botslab360Client.from_credentials(
+    "user@example.com",
+    "YOUR_PASSWORD",
+    backend=AuthBackend.ROBOT360,
+    device_identity=identity,
+)
+```
+
+After creating a new identity, store its `mid`, `android_id`, and `m2` values
+in the application's secure configuration and reconstruct the same
+`DeviceIdentity` for later logins. These identifiers are not account secrets,
+but they should not be rotated on every login.
+
+The library does not solve captchas automatically. `authenticate()` raises
+`CaptchaRequired` with image bytes and a challenge object. Present the image
+to the user, collect the code without logging it, then explicitly call
+`continue_authentication(challenge, code)`. Each retry is caller initiated.
+
+```python
+from botslab360 import CaptchaRequired
+
+try:
+    session = await client.authenticate()
+except CaptchaRequired as exc:
+    show_captcha_to_user(exc.challenge.image)
+    captcha_code = await read_captcha_code_without_logging()
+    session = await client.continue_authentication(
+        exc.challenge,
+        captcha_code,
+    )
+```
+
+On success, both methods return a ready `SmartSession`; callers never need to
+handle Q, T, or qid themselves.
 
 ## Basic usage
 
@@ -159,6 +218,9 @@ If the Smart Home SID expires, the library performs one automatic re-authenticat
 
 If the underlying Qihoo account session is no longer valid, the caller must provide new `Q` and `T` tokens.
 
+The email/password path first obtains Q/T from QUC and then uses this same
+Smart Home login path. The newer signed `/v1` API is not used.
+
 ## Development
 
 Clone the repository:
@@ -198,6 +260,9 @@ Run the test suite:
 pytest
 ```
 
+Files under `diagnostics/` are development and protocol-verification tools.
+Normal applications should use the public `Botslab360Client` API instead.
+
 ## Project status
 
 The library is currently under active development.
@@ -224,6 +289,22 @@ Do not include real credentials in:
 - logs
 - test fixtures
 - Git commits
+
+## Acknowledgements
+
+`python-botslab360` is an independent Python project and is not affiliated
+with or maintained by TA2k or the ioBroker.botslab360 project.
+
+The headless 360/Botslab QUC authentication flow in this project is based in
+part on protocol research and implementation work by TA2k in
+[ioBroker.botslab360](https://github.com/TA2k/ioBroker.botslab360), in
+particular its
+[`lib/quc.js`](https://github.com/TA2k/ioBroker.botslab360/blob/main/lib/quc.js)
+implementation. Relevant parts of the protocol were additionally verified
+against the decompiled Android application where possible. The Python
+implementation and public API in this project were developed independently.
+
+See [ATTRIBUTION.md](ATTRIBUTION.md) for license and attribution details.
 
 ## License
 

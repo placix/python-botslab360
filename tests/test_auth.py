@@ -18,6 +18,8 @@ from botslab360 import (
     credentials_from_tokens,
     derive_qid,
 )
+from botslab360.auth import BotslabAuth
+from botslab360.models import QihooCredentials
 
 QID = "1234567890"
 Q_RAW = f"u=360H{QID}&n=synthetic&m=not-a-real-token"
@@ -134,6 +136,42 @@ def test_authenticate_sends_poc_request_and_parses_string_errno() -> None:
         assert session.qid == QID
         assert session.sid == "synthetic-smart-sid"
         assert session.push_key == "synthetic-push-key"
+
+    run(scenario())
+
+
+def test_smart_login_diagnostic_redacts_credentials_and_session() -> None:
+    async def scenario() -> None:
+        credentials = QihooCredentials(q=Q_RAW, t=T_RAW, qid=QID)
+        sid = "synthetic-smart-sid"
+        push_key = "synthetic-push-key"
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            return httpx.Response(
+                200,
+                json={
+                    "errno": 0,
+                    "errmsg": (
+                        f"OK {Q_RAW} {T_RAW} {QID} {sid} {push_key}"
+                    ),
+                    "data": {"sid": sid, "pushKey": push_key},
+                },
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            result = await BotslabAuth(http_client)._diagnose_login_once(
+                credentials
+            )
+
+        assert result.http_status == 200
+        assert result.errno == 0
+        assert result.sid_present is True
+        assert result.push_key_present is True
+        rendered = f"{result!r} {result.errmsg}"
+        for secret in (Q_RAW, T_RAW, QID, sid, push_key):
+            assert secret not in rendered
 
     run(scenario())
 

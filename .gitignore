@@ -1,4 +1,3 @@
-@"
 # Python
 __pycache__/
 *.py[cod]
@@ -17,4 +16,6 @@ build/
 .pytest_cache/
 .coverage
 htmlcov/
-"@ | Add-Content .gitignore
+
+# Local credential-login identity (non-secret, but installation-specific)
+.botslab360-device-identity.json

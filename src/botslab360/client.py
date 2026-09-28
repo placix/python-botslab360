@@ -20,13 +20,22 @@ from .commands import (
     CommandSpec,
 )
 from .exceptions import ApiError, AuthenticationError, InvalidSessionError
-from .models import Device, QihooCredentials, RobotStatus, SmartSession
+from .models import (
+    AuthBackend,
+    CaptchaChallenge,
+    Device,
+    DeviceIdentity,
+    QihooCredentials,
+    RobotStatus,
+    SmartSession,
+)
 from .protocol import (
     DEFAULT_PUSH_HOST,
     DEFAULT_PUSH_PORT,
     STATUS_INFO_TYPE,
     PushClient,
 )
+from .quc import ANDROID_360_PROFILE, BOTSLAB_CLOUD_PROFILE, QucAuth
 
 DEVICE_LIST_PATH = "/common/dev/GetList"
 COMMAND_PATH = "/clean/cmd/send"
@@ -136,14 +145,33 @@ class Botslab360Client:
         push_host: str = DEFAULT_PUSH_HOST,
         push_port: int = DEFAULT_PUSH_PORT,
     ) -> None:
-        self._credentials: QihooCredentials = credentials_from_tokens(q, t)
+        self._initialize(
+            http_client=http_client,
+            base_url=base_url,
+            language=language,
+            timeout=timeout,
+            push_host=push_host,
+            push_port=push_port,
+        )
+        self._quc_auth: QucAuth | None = None
+        self._auth_backend: AuthBackend | None = None
+        self._device_identity: DeviceIdentity | None = None
+        self._set_credentials(credentials_from_tokens(q, t))
+
+    def _initialize(
+        self,
+        *,
+        http_client: httpx.AsyncClient | None,
+        base_url: str,
+        language: str,
+        timeout: float,
+        push_host: str,
+        push_port: int,
+    ) -> None:
         self._http_client = http_client or httpx.AsyncClient(timeout=timeout)
         self._owns_http_client = http_client is None
         self._base_url = base_url.rstrip("/")
         self._language = language
-        self._account_fingerprint = hashlib.sha256(
-            f"botslab360:{self._credentials.qid}".encode("utf-8")
-        ).hexdigest()
         self._push_host = push_host
         self._push_port = push_port
         self._auth = BotslabAuth(
@@ -153,6 +181,70 @@ class Botslab360Client:
         )
         self._session: SmartSession | None = None
 
+    @classmethod
+    def from_credentials(
+        cls,
+        email: str,
+        password: str,
+        *,
+        backend: AuthBackend = AuthBackend.BOTSLAB,
+        region: str | None = None,
+        device_identity: DeviceIdentity | None = None,
+        http_client: httpx.AsyncClient | None = None,
+        base_url: str = SMART_HOME_BASE_URL,
+        language: str = "de_DE",
+        timeout: float = 30.0,
+        push_host: str = DEFAULT_PUSH_HOST,
+        push_port: int = DEFAULT_PUSH_PORT,
+    ) -> "Botslab360Client":
+        """Create a client that obtains Q/T through a headless QUC login."""
+
+        if not isinstance(backend, AuthBackend):
+            raise ValueError("backend must be an AuthBackend value")
+        if backend is AuthBackend.BOTSLAB:
+            profile = BOTSLAB_CLOUD_PROFILE
+            resolved_region = region or "eu1"
+        else:
+            profile = ANDROID_360_PROFILE
+            if region is not None:
+                raise ValueError("region is not supported by the ROBOT360 backend")
+            resolved_region = None
+        QucAuth.validate_options(
+            email=email,
+            password=password,
+            region=resolved_region,
+            _profile=profile,
+        )
+        client = cls.__new__(cls)
+        client._initialize(
+            http_client=http_client,
+            base_url=base_url,
+            language=language,
+            timeout=timeout,
+            push_host=push_host,
+            push_port=push_port,
+        )
+        identity = device_identity or DeviceIdentity.generate()
+        client._credentials = None
+        client._account_fingerprint = None
+        client._device_identity = identity
+        client._auth_backend = backend
+        client._quc_auth = QucAuth(
+            client._http_client,
+            email=email,
+            password=password,
+            region=resolved_region,
+            identity=identity,
+            _profile=profile,
+        )
+        return client
+
+    def _set_credentials(self, credentials: QihooCredentials) -> None:
+        self._credentials: QihooCredentials | None = credentials
+        self._account_fingerprint: str | None = hashlib.sha256(
+            f"botslab360:{credentials.qid}".encode("utf-8")
+        ).hexdigest()
+
     @property
     def session(self) -> SmartSession | None:
         return self._session
@@ -161,13 +253,71 @@ class Botslab360Client:
     def account_fingerprint(self) -> str:
         """Return a stable account identifier that does not expose the qid."""
 
+        if self._account_fingerprint is None:
+            raise AuthenticationError(
+                "Authentication is required before the account fingerprint "
+                "is available",
+                phase="authentication",
+            )
         return self._account_fingerprint
+
+    @property
+    def device_identity(self) -> DeviceIdentity | None:
+        """Return the reusable identity for credential authentication, if any."""
+
+        return self._device_identity
+
+    @property
+    def auth_backend(self) -> AuthBackend | None:
+        """Return the selected credential backend, or ``None`` for Q/T clients."""
+
+        return self._auth_backend
 
     async def authenticate(
         self,
         *,
         client_info: Mapping[str, object] | None = None,
     ) -> SmartSession:
+        if self._credentials is None:
+            if self._quc_auth is None:
+                raise AuthenticationError(
+                    "No account credentials are available",
+                    phase="authentication",
+                )
+            self._set_credentials(await self._quc_auth.login())
+        assert self._credentials is not None
+        self._session = await self._auth.login(
+            self._credentials,
+            client_info=client_info,
+        )
+        return self._session
+
+    async def continue_authentication(
+        self,
+        challenge: CaptchaChallenge,
+        captcha_code: str,
+        *,
+        client_info: Mapping[str, object] | None = None,
+    ) -> SmartSession:
+        """Continue one credential login after a graphic captcha challenge."""
+
+        if self._quc_auth is None:
+            raise AuthenticationError(
+                "Captcha continuation is only available for credential login",
+                phase="authentication",
+            )
+        if self._credentials is not None:
+            raise AuthenticationError(
+                "Credential authentication has already completed",
+                phase="authentication",
+            )
+        self._set_credentials(
+            await self._quc_auth.login(
+                challenge=challenge,
+                captcha_code=captcha_code,
+            )
+        )
+        assert self._credentials is not None
         self._session = await self._auth.login(
             self._credentials,
             client_info=client_info,

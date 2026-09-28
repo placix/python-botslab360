@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Mapping
+from dataclasses import dataclass
 from numbers import Integral
 from typing import Any
 from urllib.parse import unquote
@@ -20,6 +21,29 @@ SMART_LOGIN_PATH = "/common/user/login"
 
 _QID_FROM_USER = re.compile(r"(?:^|[&;])u=360H(?P<qid>[0-9]+)(?=$|[&;])")
 _QID_FROM_NUMERIC_USER = re.compile(r"(?:^|[&;])u=(?P<qid>[0-9]+)(?=$|[&;])")
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _SmartLoginExchange:
+    """Internal parsed result of exactly one Smart Home login request."""
+
+    http_status: int
+    errno: int
+    response_errno: int
+    error_code: int | None
+    errmsg: str | None
+    session: SmartSession | None
+
+
+@dataclass(frozen=True, slots=True, repr=False)
+class _SmartLoginDiagnostic:
+    """Secret-free metadata for one diagnostic Smart Home login."""
+
+    http_status: int
+    errno: int
+    errmsg: str | None
+    sid_present: bool
+    push_key_present: bool
 
 
 def normalize_cookie_value(value: str, *, name: str) -> str:
@@ -70,6 +94,26 @@ def credentials_from_tokens(q: str, t: str) -> QihooCredentials:
         t=normalized_t,
         qid=qid,
     )
+
+
+def _safe_server_message(
+    value: object,
+    *,
+    credentials: QihooCredentials,
+    response_secrets: tuple[str, ...] = (),
+) -> str | None:
+    if not isinstance(value, str) or not value:
+        return None
+    safe_value = value
+    for secret in (
+        credentials.q,
+        credentials.t,
+        credentials.qid,
+        *response_secrets,
+    ):
+        if secret:
+            safe_value = safe_value.replace(secret, "<redacted>")
+    return safe_value
 
 
 def _numeric_errno(value: Any, *, status_code: int) -> int:
@@ -131,6 +175,46 @@ class BotslabAuth:
         *,
         client_info: Mapping[str, object] | None = None,
     ) -> SmartSession:
+        exchange = await self._login_once(credentials, client_info=client_info)
+        if exchange.errno != 0:
+            _raise_api_error(
+                exchange.errno,
+                status_code=exchange.http_status,
+                response_errno=exchange.response_errno,
+                error_code=exchange.error_code,
+            )
+        assert exchange.session is not None
+        return exchange.session
+
+    async def _diagnose_login_once(
+        self,
+        credentials: QihooCredentials,
+        *,
+        client_info: Mapping[str, object] | None = None,
+    ) -> _SmartLoginDiagnostic:
+        """Run one Smart Home login and return only safe result metadata."""
+
+        exchange = await self._login_once(credentials, client_info=client_info)
+        return _SmartLoginDiagnostic(
+            http_status=exchange.http_status,
+            errno=exchange.errno,
+            errmsg=exchange.errmsg,
+            sid_present=(
+                exchange.session is not None and bool(exchange.session.sid)
+            ),
+            push_key_present=(
+                exchange.session is not None and bool(exchange.session.push_key)
+            ),
+        )
+
+    async def _login_once(
+        self,
+        credentials: QihooCredentials,
+        *,
+        client_info: Mapping[str, object] | None = None,
+    ) -> _SmartLoginExchange:
+        """Send and parse exactly one Smart Home login request."""
+
         info = dict(
             client_info
             or {
@@ -174,7 +258,9 @@ class BotslabAuth:
                 phase="http",
             ) from exc
         except httpx.RequestError as exc:
-            raise ApiError("Smart Home login request failed", phase="transport") from exc
+            raise ApiError(
+                "Smart Home login request failed", phase="transport"
+            ) from exc
 
         try:
             payload = response.json()
@@ -204,12 +290,30 @@ class BotslabAuth:
             )
             if error_code != 0:
                 errno = error_code
+        response_data = payload.get("data")
+        response_secrets: tuple[str, ...] = ()
+        if isinstance(response_data, dict):
+            response_secrets = tuple(
+                value
+                for value in (
+                    response_data.get("sid"),
+                    response_data.get("pushKey"),
+                )
+                if isinstance(value, str) and value
+            )
+        errmsg = _safe_server_message(
+            payload.get("errmsg"),
+            credentials=credentials,
+            response_secrets=response_secrets,
+        )
         if errno != 0:
-            _raise_api_error(
-                errno,
-                status_code=response.status_code,
+            return _SmartLoginExchange(
+                http_status=response.status_code,
+                errno=errno,
                 response_errno=response_errno,
                 error_code=error_code,
+                errmsg=errmsg,
+                session=None,
             )
 
         data = payload.get("data")
@@ -240,4 +344,15 @@ class BotslabAuth:
                 error_code=error_code,
             )
 
-        return SmartSession(qid=credentials.qid, sid=sid, push_key=push_key)
+        return _SmartLoginExchange(
+            http_status=response.status_code,
+            errno=errno,
+            response_errno=response_errno,
+            error_code=error_code,
+            errmsg=errmsg,
+            session=SmartSession(
+                qid=credentials.qid,
+                sid=sid,
+                push_key=push_key,
+            ),
+        )
