@@ -10,14 +10,21 @@ import pytest
 
 import botslab360.client as client_module
 from botslab360 import (
+    ROOM_CLEAN_TIMES,
     ApiError,
     Botslab360Client,
     Device,
     InvalidSessionError,
     Room,
+    RoomCleaningSettings,
+    RoomFanMode,
+    RoomWaterLevel,
     SmartSession,
 )
-from botslab360.rooms import parse_room_map
+from botslab360.rooms import (
+    parse_room_map,
+    prepare_area_setting,
+)
 
 QID = "1234567890"
 Q = f"u=360H{QID}&n=synthetic&m=not-a-real-token"
@@ -79,13 +86,14 @@ def map_info() -> dict:
     }
 
 
-def map_event() -> dict:
+def map_event(payload: dict | None = None) -> dict:
+    map_payload = payload if payload is not None else map_info()
     return {
         "sn": DEVICE.id,
         "data": json.dumps(
             {
                 "infoType": "20002",
-                "data": json.dumps(map_info(), separators=(",", ":")),
+                "data": json.dumps(map_payload, separators=(",", ":")),
             }
         ),
     }
@@ -138,6 +146,188 @@ def test_map_info_parses_ten_public_rooms() -> None:
     assert parsed.rooms[9].room_type is None
     assert parsed.map_id == 1
     assert parsed.clean_id == "synthetic-clean-id"
+
+
+def test_room_vertices_parse_polygon_and_preserve_order() -> None:
+    payload = map_info()
+    payload["smartArea"]["value"][1]["vertexs"] = [
+        [100, 200],
+        [500, 200],
+        [450, 600],
+        [120, 550],
+    ]
+
+    room = parse_room_map(payload).rooms[1]
+
+    assert room.vertices == (
+        (100, 200),
+        (500, 200),
+        (450, 600),
+        (120, 550),
+    )
+
+
+def test_room_vertices_accept_triangle_without_appending_closing_point() -> None:
+    payload = map_info()
+    payload["smartArea"]["value"][0]["vertexs"] = [[0, 0], [8, 0], [4, 6]]
+
+    assert parse_room_map(payload).rooms[0].vertices == ((0, 0), (8, 0), (4, 6))
+
+
+@pytest.mark.parametrize(
+    "vertices",
+    [
+        None,
+        [],
+        [[0, 0], [1, 1]],
+        [[0, 0], [1, 1], [2]],
+        [[0, 0], [1, 1], [2, 2, 3]],
+        [[0, 0], [1, 1], [2, "3"]],
+        [[0, 0], [1, 1], [True, 3]],
+        [[0, 0], [1, 1], [2, False]],
+    ],
+)
+def test_room_vertices_ignore_missing_or_malformed_polygons(vertices: object) -> None:
+    payload = map_info()
+    area = payload["smartArea"]["value"][0]
+    if vertices is None:
+        area.pop("vertexs", None)
+    else:
+        area["vertexs"] = vertices
+
+    assert parse_room_map(payload).rooms[0].vertices is None
+
+
+def test_room_vertices_do_not_affect_base64_name_decoding() -> None:
+    payload = map_info()
+    payload["smartArea"]["value"][0]["vertexs"] = [[0, 0], [2, 0], [1, 1]]
+
+    room = parse_room_map(payload).rooms[0]
+
+    assert room.name == "Room 0"
+    assert room.vertices == ((0, 0), (2, 0), (1, 1))
+
+
+def test_room_model_remains_compatible_without_vertices() -> None:
+    room = Room(1, "Bad", None, 2, "max", 0)
+
+    assert room.vertices is None
+
+
+def test_public_room_setting_choices_match_android_values() -> None:
+    assert ROOM_CLEAN_TIMES == (1, 2)
+    assert [mode.value for mode in RoomFanMode] == [
+        "quiet",
+        "auto",
+        "strong",
+        "max",
+    ]
+    assert [level.value for level in RoomWaterLevel] == [1, 2, 3]
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (RoomCleaningSettings(clean_times=1), {"cleanTimes": 1}),
+        (RoomCleaningSettings(fan_mode="quiet"), {"windMode": "quiet"}),
+        (RoomCleaningSettings(water_pump=3), {"waterPump": 3}),
+        (
+            RoomCleaningSettings(
+                clean_times=1,
+                fan_mode=RoomFanMode.AUTO,
+                water_pump=RoomWaterLevel.LOW,
+            ),
+            {"cleanTimes": 1, "windMode": "auto", "waterPump": 1},
+        ),
+    ],
+)
+def test_prepare_area_setting_applies_only_explicit_overrides(
+    settings: RoomCleaningSettings,
+    expected: dict[str, object],
+) -> None:
+    room_map = parse_room_map(map_info())
+    original = room_map.area_setting["value"][1]
+
+    result = json.loads(prepare_area_setting(room_map, [1], {1: settings}))
+    updated = result["value"][1]
+
+    assert result["activeIds"] == [1]
+    assert [area["id"] for area in result["value"]] == list(range(10))
+    for key, value in expected.items():
+        assert updated[key] == value
+    for key, value in original.items():
+        if key not in expected:
+            assert updated[key] == value
+    assert result["value"][0] == room_map.area_setting["value"][0]
+
+
+def test_prepare_area_setting_supports_different_selected_room_settings() -> None:
+    room_map = parse_room_map(map_info())
+
+    result = json.loads(
+        prepare_area_setting(
+            room_map,
+            [6, 1],
+            {
+                1: RoomCleaningSettings(clean_times=1, fan_mode="strong"),
+                6: RoomCleaningSettings(water_pump=3),
+            },
+        )
+    )
+
+    assert result["activeIds"] == [6, 1]
+    assert [area["id"] for area in result["value"]] == list(range(10))
+    assert result["value"][1]["cleanTimes"] == 1
+    assert result["value"][1]["windMode"] == "strong"
+    assert result["value"][1]["waterPump"] == 2
+    assert result["value"][6]["cleanTimes"] == 7
+    assert result["value"][6]["windMode"] == "max"
+    assert result["value"][6]["waterPump"] == 3
+    assert result["value"][5] == room_map.area_setting["value"][5]
+
+
+@pytest.mark.parametrize(
+    "settings",
+    [
+        RoomCleaningSettings(clean_times=0),
+        RoomCleaningSettings(clean_times=3),
+        RoomCleaningSettings(clean_times=True),
+        RoomCleaningSettings(clean_times="1"),  # type: ignore[arg-type]
+        RoomCleaningSettings(fan_mode="turbo"),
+        RoomCleaningSettings(fan_mode=1),  # type: ignore[arg-type]
+        RoomCleaningSettings(water_pump=0),
+        RoomCleaningSettings(water_pump=4),
+        RoomCleaningSettings(water_pump=True),
+        RoomCleaningSettings(water_pump="1"),  # type: ignore[arg-type]
+        object(),
+    ],
+)
+def test_prepare_area_setting_rejects_invalid_settings(settings: object) -> None:
+    with pytest.raises(ValueError):
+        prepare_area_setting(
+            parse_room_map(map_info()),
+            [1],
+            {1: settings},  # type: ignore[dict-item]
+        )
+
+
+@pytest.mark.parametrize(
+    "room_settings",
+    [
+        {6: RoomCleaningSettings(clean_times=1)},
+        {True: RoomCleaningSettings(clean_times=1)},
+        [(1, RoomCleaningSettings(clean_times=1))],
+    ],
+)
+def test_prepare_area_setting_rejects_invalid_settings_mapping(
+    room_settings: object,
+) -> None:
+    with pytest.raises(ValueError):
+        prepare_area_setting(
+            parse_room_map(map_info()),
+            [1],
+            room_settings,  # type: ignore[arg-type]
+        )
 
 
 def test_get_rooms_requests_current_composite_and_closes_push(monkeypatch) -> None:
@@ -229,10 +419,194 @@ def test_clean_rooms_sends_complete_current_area_setting(
     run(scenario())
 
 
-@pytest.mark.parametrize("room_ids", [[], [99]])
-def test_clean_rooms_rejects_invalid_selection_before_cleaning_post(
+def test_clean_rooms_sends_per_room_overrides_through_public_api(
+    monkeypatch,
+) -> None:
+    async def scenario() -> None:
+        FakePushClient.events = [map_event()]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        cleaning_form: dict[str, list[str]] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cleaning_form
+            if request.url.path == "/clean/record/setAreaAndCleaning":
+                cleaning_form = parse_qs((await request.aread()).decode())
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            await authenticated_client(http_client).clean_rooms(
+                DEVICE,
+                [1, 6],
+                room_settings={
+                    1: RoomCleaningSettings(
+                        clean_times=1,
+                        fan_mode="quiet",
+                    ),
+                    6: RoomCleaningSettings(water_pump=3),
+                },
+                timeout=1,
+            )
+
+        area_setting = json.loads(cleaning_form["areaSetting"][0])
+        assert area_setting["activeIds"] == [1, 6]
+        assert area_setting["value"][1]["cleanTimes"] == 1
+        assert area_setting["value"][1]["windMode"] == "quiet"
+        assert area_setting["value"][1]["waterPump"] == 2
+        assert area_setting["value"][6]["cleanTimes"] == 7
+        assert area_setting["value"][6]["windMode"] == "max"
+        assert area_setting["value"][6]["waterPump"] == 3
+        assert area_setting["value"][5] == (
+            parse_room_map(map_info()).area_setting["value"][5]
+        )
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("settings", "expected"),
+    [
+        (RoomCleaningSettings(clean_times=1), {"cleanTimes": 1}),
+        (RoomCleaningSettings(fan_mode="quiet"), {"windMode": "quiet"}),
+        (RoomCleaningSettings(water_pump=3), {"waterPump": 3}),
+        (
+            RoomCleaningSettings(
+                clean_times=1,
+                fan_mode="strong",
+                water_pump=3,
+            ),
+            {"cleanTimes": 1, "windMode": "strong", "waterPump": 3},
+        ),
+    ],
+)
+def test_clean_rooms_applies_each_settings_shape_through_public_api(
+    monkeypatch,
+    settings: RoomCleaningSettings,
+    expected: dict[str, object],
+) -> None:
+    async def scenario() -> None:
+        FakePushClient.events = [map_event()]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        cleaning_form: dict[str, list[str]] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cleaning_form
+            if request.url.path == "/clean/record/setAreaAndCleaning":
+                cleaning_form = parse_qs((await request.aread()).decode())
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            await authenticated_client(http_client).clean_rooms(
+                DEVICE,
+                [1],
+                room_settings={1: settings},
+                timeout=1,
+            )
+
+        original = parse_room_map(map_info()).area_setting
+        area_setting = json.loads(cleaning_form["areaSetting"][0])
+        updated = area_setting["value"][1]
+        assert area_setting["activeIds"] == [1]
+        for key, value in expected.items():
+            assert updated[key] == value
+        for key, value in original["value"][1].items():
+            if key not in expected:
+                assert updated[key] == value
+        assert area_setting["value"][0] == original["value"][0]
+
+    run(scenario())
+
+
+def test_clean_rooms_applies_same_settings_to_multiple_rooms(monkeypatch) -> None:
+    async def scenario() -> None:
+        FakePushClient.events = [map_event()]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        cleaning_form: dict[str, list[str]] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cleaning_form
+            if request.url.path == "/clean/record/setAreaAndCleaning":
+                cleaning_form = parse_qs((await request.aread()).decode())
+            return httpx.Response(200, json={"errno": 0})
+
+        settings = RoomCleaningSettings(clean_times=2, fan_mode="auto")
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            await authenticated_client(http_client).clean_rooms(
+                DEVICE,
+                [1, 6],
+                room_settings={1: settings, 6: settings},
+                timeout=1,
+            )
+
+        area_setting = json.loads(cleaning_form["areaSetting"][0])
+        assert area_setting["activeIds"] == [1, 6]
+        for room_id in (1, 6):
+            assert area_setting["value"][room_id]["cleanTimes"] == 2
+            assert area_setting["value"][room_id]["windMode"] == "auto"
+
+    run(scenario())
+
+
+def test_clean_rooms_preserves_vendor_water_pump_zero(monkeypatch) -> None:
+    async def scenario() -> None:
+        payload = map_info()
+        payload["smartArea"]["value"][1]["waterPump"] = 0
+        FakePushClient.events = [map_event(payload)]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        cleaning_form: dict[str, list[str]] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cleaning_form
+            if request.url.path == "/clean/record/setAreaAndCleaning":
+                cleaning_form = parse_qs((await request.aread()).decode())
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            await authenticated_client(http_client).clean_rooms(
+                DEVICE,
+                [1],
+                room_settings={1: RoomCleaningSettings(clean_times=1)},
+                timeout=1,
+            )
+
+        area_setting = json.loads(cleaning_form["areaSetting"][0])
+        assert area_setting["value"][1]["cleanTimes"] == 1
+        assert area_setting["value"][1]["waterPump"] == 0
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    ("room_ids", "room_settings"),
+    [
+        ([1], {1: RoomCleaningSettings(clean_times=0)}),
+        ([1], {1: RoomCleaningSettings(clean_times=3)}),
+        ([1], {1: RoomCleaningSettings(clean_times=True)}),
+        ([1], {1: RoomCleaningSettings(fan_mode="turbo")}),
+        ([1], {1: RoomCleaningSettings(water_pump=0)}),
+        ([1], {1: RoomCleaningSettings(water_pump=4)}),
+        ([1], {1: RoomCleaningSettings(water_pump=True)}),
+        ([1], {1: object()}),
+        ([1], {6: RoomCleaningSettings(clean_times=1)}),
+        ([1], {True: RoomCleaningSettings(clean_times=1)}),
+        ([99], {99: RoomCleaningSettings(clean_times=1)}),
+    ],
+)
+def test_clean_rooms_validation_prevents_cleaning_post(
     monkeypatch,
     room_ids: list[int],
+    room_settings: object,
 ) -> None:
     async def scenario() -> None:
         FakePushClient.events = [map_event()]
@@ -253,6 +627,39 @@ def test_clean_rooms_rejects_invalid_selection_before_cleaning_post(
                 await authenticated_client(http_client).clean_rooms(
                     DEVICE,
                     room_ids,
+                    room_settings=room_settings,  # type: ignore[arg-type]
+                    timeout=1,
+                )
+
+        assert cleaning_posts == 0
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("room_ids", [[], [99], [True], ["1"]])
+def test_clean_rooms_rejects_invalid_selection_before_cleaning_post(
+    monkeypatch,
+    room_ids: list[object],
+) -> None:
+    async def scenario() -> None:
+        FakePushClient.events = [map_event()]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        cleaning_posts = 0
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            nonlocal cleaning_posts
+            if request.url.path == "/clean/record/setAreaAndCleaning":
+                cleaning_posts += 1
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            with pytest.raises(ValueError):
+                await authenticated_client(http_client).clean_rooms(
+                    DEVICE,
+                    room_ids,  # type: ignore[arg-type]
                     timeout=1,
                 )
 

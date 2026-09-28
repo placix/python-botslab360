@@ -31,6 +31,7 @@ from .models import (
     DeviceIdentity,
     QihooCredentials,
     Room,
+    RoomCleaningSettings,
     RobotStatus,
     SmartSession,
 )
@@ -53,6 +54,7 @@ from .rooms import (
     LOAD_DATA,
     ROOM_CLEANING_PATH,
     RoomMap,
+    normalize_room_settings,
     prepare_area_setting,
     wait_for_room_map,
 )
@@ -557,6 +559,7 @@ class Botslab360Client:
         device: Device | str,
         room_ids: list[int],
         *,
+        room_settings: Mapping[int, RoomCleaningSettings] | None = None,
         timeout: float = 30.0,
     ) -> None:
         """Start cleaning selected rooms from a freshly requested map."""
@@ -572,10 +575,15 @@ class Botslab360Client:
         ):
             raise ValueError("room_ids must contain integers")
         normalized_ids = list(dict.fromkeys(room_ids))
+        normalized_settings = normalize_room_settings(
+            normalized_ids,
+            room_settings,
+        )
         await self._with_session_refresh(
             lambda: self._clean_rooms_once(
                 device_id=device_id,
                 room_ids=normalized_ids,
+                room_settings=normalized_settings,
                 timeout=timeout,
             )
         )
@@ -585,13 +593,18 @@ class Botslab360Client:
         *,
         device_id: str,
         room_ids: list[int],
+        room_settings: Mapping[int, RoomCleaningSettings],
         timeout: float,
     ) -> None:
         room_map = await self._get_room_map_once(
             device_id=device_id,
             timeout=timeout,
         )
-        area_setting = prepare_area_setting(room_map, room_ids)
+        area_setting = prepare_area_setting(
+            room_map,
+            room_ids,
+            room_settings,
+        )
         await self._post_room_cleaning(
             device_id=device_id,
             clean_id=room_map.clean_id,

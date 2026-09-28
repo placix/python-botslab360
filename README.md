@@ -6,7 +6,7 @@ This project provides an unofficial Python interface for selected 360 robot vacu
 
 > [!WARNING]
 > This project is unofficial and not affiliated with Botslab, Qihoo 360 or 360 Smart Home.
-> Version `0.3.0` should be considered experimental.
+> Version `0.4.0` should be considered experimental.
 
 ## Features
 
@@ -181,7 +181,7 @@ first reading the current room list.
 rooms = await client.get_rooms(robot)
 
 for room in rooms:
-    print(room.id, room.name)
+    print(room.id, room.name, room.vertices)
 
 await client.clean_rooms(robot, [1])
 ```
@@ -191,6 +191,42 @@ Pass multiple IDs to clean several rooms in one request:
 ```python
 await client.clean_rooms(robot, [1, 6])
 ```
+
+When supplied by the robot, `Room.vertices` is the room polygon in the vendor's
+map coordinate system (integer millimetres, original point order). Missing or
+malformed polygons are exposed as `None`; raw MapInfo data is not exposed.
+
+The Android room-attribute UI defines one or two cleaning passes, four suction
+modes, and three mopping water levels. Optional settings can override the
+current attributes for selected rooms in one cleaning request:
+
+```python
+from botslab360 import (
+    RoomCleaningSettings,
+    RoomFanMode,
+    RoomWaterLevel,
+)
+
+await client.clean_rooms(
+    robot,
+    [1],
+    room_settings={
+        1: RoomCleaningSettings(
+            clean_times=2,
+            fan_mode=RoomFanMode.STRONG,
+            water_pump=RoomWaterLevel.MEDIUM,
+        )
+    },
+)
+```
+
+These settings apply only to the selected cleaning run. Omitted settings keep
+the current values from the freshly fetched room map, including existing
+vendor values and unrelated fields. The supported suction values are `quiet`,
+`auto` (shown as Standard mode), `strong` (shown as Powerful mode), and `max`.
+Water levels are `1` (low), `2` (medium), and `3` (high). An existing vendor
+`waterPump=0` value is preserved when not overridden, but `0` is not exposed as
+an "off" choice because that meaning has not been confirmed.
 
 ## Status information
 

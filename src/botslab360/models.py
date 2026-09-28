@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import Enum, IntEnum
 from uuid import UUID, uuid4
 
 
@@ -111,6 +111,36 @@ class Room:
     clean_times: int | None
     fan_mode: str | None
     water_pump: int | None
+    vertices: tuple[tuple[int, int], ...] | None = None
+
+
+class RoomFanMode(str, Enum):
+    """Suction modes supported by the Android room-attribute UI."""
+
+    QUIET = "quiet"
+    AUTO = "auto"
+    STRONG = "strong"
+    MAX = "max"
+
+
+class RoomWaterLevel(IntEnum):
+    """Mopping water levels supported by the Android room-attribute UI."""
+
+    LOW = 1
+    MEDIUM = 2
+    HIGH = 3
+
+
+ROOM_CLEAN_TIMES = (1, 2)
+
+
+@dataclass(frozen=True, slots=True)
+class RoomCleaningSettings:
+    """Optional cleaning attributes for one room."""
+
+    clean_times: int | None = None
+    fan_mode: str | None = None
+    water_pump: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

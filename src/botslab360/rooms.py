@@ -6,6 +6,7 @@ import asyncio
 import base64
 import copy
 import json
+from collections.abc import Mapping
 from dataclasses import dataclass
 from json import JSONDecodeError
 from typing import Any
@@ -14,7 +15,13 @@ from urllib.parse import urlsplit
 import httpx
 
 from .exceptions import ApiError
-from .models import Room
+from .models import (
+    ROOM_CLEAN_TIMES,
+    Room,
+    RoomCleaningSettings,
+    RoomFanMode,
+    RoomWaterLevel,
+)
 from .protocol import PushClient
 
 COMPOSITE_INFO_TYPE = "30000"
@@ -64,6 +71,58 @@ class RoomMap:
     area_setting: dict[str, Any]
 
 
+_ROOM_FAN_MODE_VALUES = frozenset(mode.value for mode in RoomFanMode)
+_ROOM_WATER_LEVEL_VALUES = frozenset(level.value for level in RoomWaterLevel)
+
+
+def validate_room_cleaning_settings(settings: object) -> RoomCleaningSettings:
+    """Validate one public room-settings value without network access."""
+
+    if not isinstance(settings, RoomCleaningSettings):
+        raise ValueError("room settings must be RoomCleaningSettings instances")
+    if settings.clean_times is not None and (
+        isinstance(settings.clean_times, bool)
+        or not isinstance(settings.clean_times, int)
+        or settings.clean_times not in ROOM_CLEAN_TIMES
+    ):
+        raise ValueError("clean_times must be 1 or 2")
+    if settings.fan_mode is not None and (
+        not isinstance(settings.fan_mode, str)
+        or settings.fan_mode not in _ROOM_FAN_MODE_VALUES
+    ):
+        raise ValueError("fan_mode must be quiet, auto, strong, or max")
+    if settings.water_pump is not None and (
+        isinstance(settings.water_pump, bool)
+        or not isinstance(settings.water_pump, int)
+        or settings.water_pump not in _ROOM_WATER_LEVEL_VALUES
+    ):
+        raise ValueError("water_pump must be 1, 2, or 3")
+    return settings
+
+
+def normalize_room_settings(
+    room_ids: list[int],
+    room_settings: Mapping[int, RoomCleaningSettings] | None,
+) -> dict[int, RoomCleaningSettings]:
+    """Validate and snapshot per-run overrides for selected rooms."""
+
+    if room_settings is None:
+        return {}
+    if not isinstance(room_settings, Mapping):
+        raise ValueError("room_settings must be a mapping")
+    selected_ids = set(room_ids)
+    normalized: dict[int, RoomCleaningSettings] = {}
+    for room_id, settings in room_settings.items():
+        if isinstance(room_id, bool) or not isinstance(room_id, int):
+            raise ValueError("room_settings keys must be integer room IDs")
+        if room_id not in selected_ids:
+            raise ValueError(
+                f"Room settings supplied for unselected room ID: {room_id}"
+            )
+        normalized[room_id] = validate_room_cleaning_settings(settings)
+    return normalized
+
+
 def _json_object(value: object, *, field: str) -> dict[str, Any]:
     if isinstance(value, str):
         try:
@@ -94,6 +153,27 @@ def _optional_int(value: object) -> int | None:
 
 def _optional_str(value: object) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _room_vertices(value: object) -> tuple[tuple[int, int], ...] | None:
+    """Return a valid room polygon without altering vendor coordinates."""
+
+    if not isinstance(value, list) or len(value) < 3:
+        return None
+    vertices: list[tuple[int, int]] = []
+    for point in value:
+        if not isinstance(point, list) or len(point) != 2:
+            return None
+        x, y = point
+        if (
+            isinstance(x, bool)
+            or not isinstance(x, int)
+            or isinstance(y, bool)
+            or not isinstance(y, int)
+        ):
+            return None
+        vertices.append((x, y))
+    return tuple(vertices)
 
 
 def gson_sweep_area(value: object) -> dict[str, Any] | None:
@@ -194,6 +274,7 @@ def parse_room_map(map_info: object) -> RoomMap:
                 clean_times=_optional_int(area.get("cleanTimes")),
                 fan_mode=_optional_str(area.get("windMode")),
                 water_pump=_optional_int(area.get("waterPump")),
+                vertices=_room_vertices(area.get("vertexs")),
             )
         )
     return RoomMap(
@@ -204,7 +285,29 @@ def parse_room_map(map_info: object) -> RoomMap:
     )
 
 
-def prepare_area_setting(room_map: RoomMap, room_ids: list[int]) -> str:
+def _apply_room_settings(
+    area_setting: dict[str, Any],
+    room_settings: Mapping[int, RoomCleaningSettings],
+) -> None:
+    """Apply validated partial settings without changing unrelated fields."""
+
+    for area in area_setting["value"]:
+        settings = room_settings.get(area["id"])
+        if settings is None:
+            continue
+        if settings.clean_times is not None:
+            area["cleanTimes"] = settings.clean_times
+        if settings.fan_mode is not None:
+            area["windMode"] = settings.fan_mode
+        if settings.water_pump is not None:
+            area["waterPump"] = settings.water_pump
+
+
+def prepare_area_setting(
+    room_map: RoomMap,
+    room_ids: list[int],
+    room_settings: Mapping[int, RoomCleaningSettings] | None = None,
+) -> str:
     """Select rooms while preserving the complete current area definitions."""
 
     if not room_ids:
@@ -220,8 +323,10 @@ def prepare_area_setting(room_map: RoomMap, room_ids: list[int]) -> str:
     if unknown_ids:
         raise ValueError(f"Unknown room IDs: {unknown_ids}")
 
+    normalized_settings = normalize_room_settings(selected_ids, room_settings)
     area_setting = copy.deepcopy(room_map.area_setting)
     area_setting["activeIds"] = selected_ids
+    _apply_room_settings(area_setting, normalized_settings)
     return gson_json(area_setting)
 
 
