@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import json
 from collections.abc import Awaitable, Callable, Mapping
+from contextlib import suppress
 from numbers import Integral
 from typing import Any, TypeVar
+from urllib.parse import quote_plus
 from uuid import uuid4
 
 import httpx
@@ -26,19 +30,40 @@ from .models import (
     Device,
     DeviceIdentity,
     QihooCredentials,
+    Room,
     RobotStatus,
     SmartSession,
 )
 from .protocol import (
+    ANDROID_360_PUSH_CLIENT_VERSION,
+    ANDROID_360_PUSH_HEARTBEAT_INTERVAL,
+    ANDROID_360_PUSH_HEARTBEAT_TIMEOUT,
+    ANDROID_360_PUSH_PORT,
+    DEFAULT_PUSH_CLIENT_VERSION,
     DEFAULT_PUSH_HOST,
+    DEFAULT_PUSH_HEARTBEAT_INTERVAL,
+    DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
     DEFAULT_PUSH_PORT,
     STATUS_INFO_TYPE,
     PushClient,
 )
 from .quc import ANDROID_360_PROFILE, BOTSLAB_CLOUD_PROFILE, QucAuth
+from .rooms import (
+    COMPOSITE_INFO_TYPE,
+    LOAD_DATA,
+    ROOM_CLEANING_PATH,
+    RoomMap,
+    prepare_area_setting,
+    wait_for_room_map,
+)
 
 DEVICE_LIST_PATH = "/common/dev/GetList"
 COMMAND_PATH = "/clean/cmd/send"
+ANDROID_APP_VERSION = "11.1.7"
+ANDROID_CHANNEL_ID = "Overseas"
+ANDROID_DEVICE_MANUFACTURER = "Google"
+ANDROID_DEVICE_MODEL = "sdk_gphone64_x86_64"
+ANDROID_ROOM_USER_AGENT = "okhttp/4.10.0"
 _ResultT = TypeVar("_ResultT")
 
 
@@ -152,6 +177,9 @@ class Botslab360Client:
             timeout=timeout,
             push_host=push_host,
             push_port=push_port,
+            push_client_version=DEFAULT_PUSH_CLIENT_VERSION,
+            push_heartbeat_timeout=DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
+            push_heartbeat_interval=DEFAULT_PUSH_HEARTBEAT_INTERVAL,
         )
         self._quc_auth: QucAuth | None = None
         self._auth_backend: AuthBackend | None = None
@@ -167,6 +195,9 @@ class Botslab360Client:
         timeout: float,
         push_host: str,
         push_port: int,
+        push_client_version: str,
+        push_heartbeat_timeout: int,
+        push_heartbeat_interval: float,
     ) -> None:
         self._http_client = http_client or httpx.AsyncClient(timeout=timeout)
         self._owns_http_client = http_client is None
@@ -174,6 +205,9 @@ class Botslab360Client:
         self._language = language
         self._push_host = push_host
         self._push_port = push_port
+        self._push_client_version = push_client_version
+        self._push_heartbeat_timeout = push_heartbeat_timeout
+        self._push_heartbeat_interval = push_heartbeat_interval
         self._auth = BotslabAuth(
             self._http_client,
             base_url=base_url,
@@ -195,7 +229,7 @@ class Botslab360Client:
         language: str = "de_DE",
         timeout: float = 30.0,
         push_host: str = DEFAULT_PUSH_HOST,
-        push_port: int = DEFAULT_PUSH_PORT,
+        push_port: int | None = None,
     ) -> "Botslab360Client":
         """Create a client that obtains Q/T through a headless QUC login."""
 
@@ -204,11 +238,23 @@ class Botslab360Client:
         if backend is AuthBackend.BOTSLAB:
             profile = BOTSLAB_CLOUD_PROFILE
             resolved_region = region or "eu1"
+            resolved_push_port = (
+                DEFAULT_PUSH_PORT if push_port is None else push_port
+            )
+            push_client_version = DEFAULT_PUSH_CLIENT_VERSION
+            push_heartbeat_timeout = DEFAULT_PUSH_HEARTBEAT_TIMEOUT
+            push_heartbeat_interval = DEFAULT_PUSH_HEARTBEAT_INTERVAL
         else:
             profile = ANDROID_360_PROFILE
             if region is not None:
                 raise ValueError("region is not supported by the ROBOT360 backend")
             resolved_region = None
+            resolved_push_port = (
+                ANDROID_360_PUSH_PORT if push_port is None else push_port
+            )
+            push_client_version = ANDROID_360_PUSH_CLIENT_VERSION
+            push_heartbeat_timeout = ANDROID_360_PUSH_HEARTBEAT_TIMEOUT
+            push_heartbeat_interval = ANDROID_360_PUSH_HEARTBEAT_INTERVAL
         QucAuth.validate_options(
             email=email,
             password=password,
@@ -222,7 +268,10 @@ class Botslab360Client:
             language=language,
             timeout=timeout,
             push_host=push_host,
-            push_port=push_port,
+            push_port=resolved_push_port,
+            push_client_version=push_client_version,
+            push_heartbeat_timeout=push_heartbeat_timeout,
+            push_heartbeat_interval=push_heartbeat_interval,
         )
         identity = device_identity or DeviceIdentity.generate()
         client._credentials = None
@@ -477,6 +526,9 @@ class Botslab360Client:
             self._session.push_key,
             host=self._push_host,
             port=self._push_port,
+            client_version=self._push_client_version,
+            heartbeat_timeout=self._push_heartbeat_timeout,
+            heartbeat_interval=self._push_heartbeat_interval,
         )
         async with push:
             await self._request_status(device_id=device_id, task_id=task_id)
@@ -484,6 +536,200 @@ class Botslab360Client:
                 device_id=device_id,
                 task_id=task_id,
                 timeout=timeout,
+            )
+
+    async def get_rooms(
+        self,
+        device: Device | str,
+        *,
+        timeout: float = 30.0,
+    ) -> list[Room]:
+        """Return rooms from a freshly requested smart-area map."""
+
+        device_id = _device_id(device)
+        room_map = await self._with_session_refresh(
+            lambda: self._get_room_map_once(device_id=device_id, timeout=timeout)
+        )
+        return list(room_map.rooms)
+
+    async def clean_rooms(
+        self,
+        device: Device | str,
+        room_ids: list[int],
+        *,
+        timeout: float = 30.0,
+    ) -> None:
+        """Start cleaning selected rooms from a freshly requested map."""
+
+        device_id = _device_id(device)
+        if not isinstance(room_ids, list):
+            raise ValueError("room_ids must be a list of integers")
+        if not room_ids:
+            raise ValueError("room_ids must not be empty")
+        if any(
+            isinstance(room_id, bool) or not isinstance(room_id, int)
+            for room_id in room_ids
+        ):
+            raise ValueError("room_ids must contain integers")
+        normalized_ids = list(dict.fromkeys(room_ids))
+        await self._with_session_refresh(
+            lambda: self._clean_rooms_once(
+                device_id=device_id,
+                room_ids=normalized_ids,
+                timeout=timeout,
+            )
+        )
+
+    async def _clean_rooms_once(
+        self,
+        *,
+        device_id: str,
+        room_ids: list[int],
+        timeout: float,
+    ) -> None:
+        room_map = await self._get_room_map_once(
+            device_id=device_id,
+            timeout=timeout,
+        )
+        area_setting = prepare_area_setting(room_map, room_ids)
+        await self._post_room_cleaning(
+            device_id=device_id,
+            clean_id=room_map.clean_id,
+            area_setting=area_setting,
+            task_id=str(uuid4()),
+        )
+
+    async def _get_room_map_once(
+        self,
+        *,
+        device_id: str,
+        timeout: float,
+    ) -> RoomMap:
+        if self._session is None:
+            raise AuthenticationError(
+                "Authentication is required before requesting rooms",
+                phase="authentication",
+            )
+        push = PushClient(
+            self._session.sid,
+            self._session.push_key,
+            host=self._push_host,
+            port=self._push_port,
+            client_version=self._push_client_version,
+            heartbeat_timeout=self._push_heartbeat_timeout,
+            heartbeat_interval=self._push_heartbeat_interval,
+        )
+        async with push:
+            waiter = asyncio.create_task(
+                wait_for_room_map(
+                    push,
+                    device_id=device_id,
+                    http_client=self._http_client,
+                    timeout=timeout,
+                )
+            )
+            await asyncio.sleep(0)
+            try:
+                await self._post_robot_request(
+                    device_id=device_id,
+                    info_type=COMPOSITE_INFO_TYPE,
+                    data=json.dumps(LOAD_DATA, separators=(",", ":")),
+                    task_id=str(uuid4()),
+                    operation="room map request",
+                )
+                return await waiter
+            finally:
+                if not waiter.done():
+                    waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await waiter
+
+    async def _post_room_cleaning(
+        self,
+        *,
+        device_id: str,
+        clean_id: str,
+        area_setting: str,
+        task_id: str,
+    ) -> None:
+        if self._session is None or self._credentials is None:
+            raise AuthenticationError(
+                "Authentication is required before cleaning rooms",
+                phase="authentication",
+            )
+        headers = {
+            "Content-Type": "application/x-www-form-urlencoded",
+            "Accept": "*/*",
+            "Connection": "keep-alive",
+            "Cookie": (
+                f"q={self._credentials.q};t={self._credentials.t};"
+                f"qid={self._credentials.qid};sid={quote_plus(self._session.sid)}"
+            ),
+            "User-Agent": ANDROID_ROOM_USER_AGENT,
+        }
+        form = {
+            "sn": device_id,
+            "cleanId": clean_id,
+            "areaSetting": area_setting,
+            "taskid": task_id,
+            "from": "mpc_and",
+            "devType": "3",
+            "channel_id": ANDROID_CHANNEL_ID,
+            "appVer": ANDROID_APP_VERSION,
+            "lang": self._language,
+            "model": ANDROID_DEVICE_MODEL,
+            "manufacturer": ANDROID_DEVICE_MANUFACTURER,
+        }
+        try:
+            response = await self._http_client.post(
+                f"{self._base_url}{ROOM_CLEANING_PATH}",
+                data=form,
+                headers=headers,
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ApiError(
+                "Room cleaning returned an HTTP error",
+                status_code=exc.response.status_code,
+                phase="http",
+            ) from exc
+        except httpx.RequestError as exc:
+            raise ApiError("Room cleaning failed", phase="transport") from exc
+
+        try:
+            payload = response.json()
+        except ValueError as exc:
+            raise ApiError(
+                "Room cleaning returned invalid JSON",
+                status_code=response.status_code,
+                phase="json",
+            ) from exc
+        if not isinstance(payload, dict):
+            raise ApiError(
+                "Room cleaning returned an invalid response",
+                status_code=response.status_code,
+                phase="response-validation",
+            )
+        response_errno = _numeric_api_code(
+            payload.get("errno"),
+            status_code=response.status_code,
+        )
+        errno = response_errno
+        error_code = None
+        if "errorCode" in payload:
+            error_code = _numeric_api_code(
+                payload["errorCode"],
+                status_code=response.status_code,
+            )
+            if error_code != 0:
+                errno = error_code
+        if errno != 0:
+            _raise_smart_api_error(
+                errno,
+                operation="room cleaning",
+                status_code=response.status_code,
+                response_errno=response_errno,
+                error_code=error_code,
             )
 
     async def start_cleaning(self, device: Device | str) -> None:

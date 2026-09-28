@@ -16,6 +16,7 @@ from .models import (
     Device,
     DeviceIdentity,
     QihooCredentials,
+    Room,
     RobotStatus,
     SmartSession,
 )
@@ -34,6 +35,7 @@ __all__ = [
     "InvalidSessionError",
     "QihooCredentials",
     "QucAuthenticationError",
+    "Room",
     "RobotStatus",
     "SmartSession",
     "credentials_from_tokens",

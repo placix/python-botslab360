@@ -102,6 +102,18 @@ class Device:
 
 
 @dataclass(frozen=True, slots=True)
+class Room:
+    """A room from the robot's current smart-area map."""
+
+    id: int
+    name: str
+    room_type: str | None
+    clean_times: int | None
+    fan_mode: str | None
+    water_pump: int | None
+
+
+@dataclass(frozen=True, slots=True)
 class RobotStatus:
     """Read-only status reported by a Botslab/360 robot."""
 

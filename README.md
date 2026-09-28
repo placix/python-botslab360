@@ -6,7 +6,7 @@ This project provides an unofficial Python interface for selected 360 robot vacu
 
 > [!WARNING]
 > This project is unofficial and not affiliated with Botslab, Qihoo 360 or 360 Smart Home.
-> Version `0.2.0` should be considered experimental.
+> Version `0.3.0` should be considered experimental.
 
 ## Features
 
@@ -21,15 +21,17 @@ Currently implemented:
 - Robot status retrieval
 - TCP / push protocol communication
 - AES decryption of push messages
+- Current room discovery from the robot map
+- Single-room and multi-room cleaning
 - Start cleaning
 - Pause cleaning
 - Resume cleaning
 - Return to dock
 - Locate robot
 
-Currently tested with:
+Device control and room/map support have been verified with:
 
-- 360 S9-P / X90
+- 360 S9-P using the 360Robot backend
 
 Other models may work but have not yet been verified.
 
@@ -141,7 +143,7 @@ async def main() -> None:
             print(device.name)
             print(device.model)
 
-            status = await client.get_status(device)
+            status = await client.get_status(device.id)
 
             print(f"Battery: {status.battery}%")
             print(f"State: {status.state}")
@@ -167,6 +169,27 @@ async with Botslab360Client(q, t) as client:
     await client.resume(robot)
     await client.return_to_dock(robot)
     await client.locate(robot)
+```
+
+### Room cleaning
+
+Room cleaning always fetches the current map before validating and sending the
+selection. Room IDs are device- and map-specific; do not hard-code IDs without
+first reading the current room list.
+
+```python
+rooms = await client.get_rooms(robot)
+
+for room in rooms:
+    print(room.id, room.name)
+
+await client.clean_rooms(robot, [1])
+```
+
+Pass multiple IDs to clean several rooms in one request:
+
+```python
+await client.clean_rooms(robot, [1, 6])
 ```
 
 ## Status information
@@ -274,9 +297,8 @@ Planned future work may include:
 - Additional robot models
 - Persistent push connection
 - Fan speed control
-- Room cleaning
 - Zone cleaning
-- Map support
+- Additional map features
 
 ## Security
 

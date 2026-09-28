@@ -8,48 +8,59 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import base64
 import copy
 import json
 import logging
 import os
 import re
 import sys
-from contextlib import contextmanager
+import tempfile
+from contextlib import contextmanager, suppress
+from getpass import getpass
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import quote_plus, urlsplit
 from uuid import uuid4
 
 import httpx
 
 import botslab360.client as client_module
-from botslab360 import ApiError, AuthenticationError, Botslab360Client
+from botslab360 import (
+    ApiError,
+    AuthBackend,
+    AuthenticationError,
+    Botslab360Client,
+    CaptchaRequired,
+    DeviceIdentity,
+    InvalidSessionError,
+)
 from botslab360.models import Device
-from botslab360.protocol import PushClient, decode_push_envelope
+from botslab360.protocol import (
+    DEFAULT_PUSH_CLIENT_VERSION,
+    DEFAULT_PUSH_HEARTBEAT_INTERVAL,
+    DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
+    PushClient,
+    decode_push_envelope,
+)
+from botslab360.rooms import (
+    decode_room_name as _production_decode_room_name,
+    gson_json as _production_gson_json,
+    gson_sweep_area as _production_gson_sweep_area,
+    gson_sweep_area_list as _production_gson_sweep_area_list,
+)
 
+CAPTCHA_CONFIRMATION = "CONTINUE ONE ROBOT360 CAPTCHA"
+DEFAULT_IDENTITY_PATH = (
+    Path(__file__).resolve().parents[1] / ".botslab360-device-identity.json"
+)
+ANDROID_APP_VERSION = "11.1.7"
+ANDROID_CHANNEL_ID = "Overseas"
+ANDROID_DEVICE_MANUFACTURER = "Google"
+ANDROID_DEVICE_MODEL = "sdk_gphone64_x86_64"
+ANDROID_ROOM_USER_AGENT = "okhttp/4.10.0"
 COMPOSITE_INFO_TYPE = "30000"
 MAP_INFO_TYPE = "20002"
 ROOM_CLEANING_ENDPOINT = "clean/record/setAreaAndCleaning"
-SWEEP_AREA_REFERENCE_FIELDS = (
-    "active",
-    "cacheType",
-    "forbidType",
-    "mode",
-    "name",
-    "roomType",
-    "tag",
-    "vertexs",
-    "windMode",
-)
-SWEEP_AREA_PRIMITIVE_DEFAULTS = {
-    "cleanTimes": 0,
-    "id": 0,
-    "material": 0,
-    "radius": 0,
-    "relativeRoom": -1,
-    "waterPump": 0,
-}
 SWEEP_AREA_FIELDS = (
     "active",
     "cacheType",
@@ -96,6 +107,89 @@ SUPPORT_CAPABILITIES = (
 _SUPPORT_CAPABILITY_NAMES = {
     re.sub(r"[^a-z0-9]", "", name.lower()): name for name in SUPPORT_CAPABILITIES
 }
+
+
+def _identity_payload(identity: DeviceIdentity) -> dict[str, str]:
+    return {
+        "mid": identity.mid,
+        "android_id": identity.android_id,
+        "m2": identity.m2,
+    }
+
+
+def _load_or_create_identity(path: Path) -> tuple[DeviceIdentity, bool]:
+    path = path.expanduser()
+    if path.exists():
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        return DeviceIdentity(
+            mid=payload["mid"],
+            android_id=payload["android_id"],
+            m2=payload["m2"],
+        ), False
+
+    identity = DeviceIdentity.generate()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(_identity_payload(identity), indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return identity, True
+
+
+def _captcha_suffix(image: bytes) -> str:
+    if image.startswith(b"\x89PNG\r\n\x1a\n"):
+        return ".png"
+    if image.startswith((b"GIF87a", b"GIF89a")):
+        return ".gif"
+    if image.startswith(b"\xff\xd8\xff"):
+        return ".jpg"
+    if image.startswith(b"RIFF") and image[8:12] == b"WEBP":
+        return ".webp"
+    return ".img"
+
+
+def _captcha_path(image: bytes) -> Path:
+    return Path(tempfile.gettempdir()) / (
+        "botslab360-room-captcha" + _captcha_suffix(image)
+    )
+
+
+def _robot360_client(
+    account: str,
+    password: str,
+    identity: DeviceIdentity,
+) -> Botslab360Client:
+    return Botslab360Client.from_credentials(
+        email=account,
+        password=password,
+        backend=AuthBackend.ROBOT360,
+        device_identity=identity,
+    )
+
+
+async def _authenticate_client(
+    client: Botslab360Client,
+    *,
+    captcha_path: Path | None = None,
+) -> bool:
+    try:
+        await client.authenticate()
+    except CaptchaRequired as error:
+        challenge = error.challenge
+        output_path = captcha_path or _captcha_path(challenge.image)
+        output_path.write_bytes(challenge.image)
+        print(f"Captcha image: {output_path}")
+
+        confirmation = input(f"Type {CAPTCHA_CONFIRMATION} to continue: ")
+        if confirmation != CAPTCHA_CONFIRMATION:
+            print("Captcha continuation not requested.")
+            return False
+        captcha_code = getpass("Captcha code: ")
+        if not captcha_code:
+            print("Captcha continuation not sent: empty code.")
+            return False
+        await client.continue_authentication(challenge, captcha_code)
+    return True
 
 
 def _json_object(value: object) -> dict[str, Any] | None:
@@ -428,32 +522,252 @@ async def _wait_for_map(
         raise ApiError("Push client is not connected", phase="transport")
 
     while True:
-        try:
-            chunk = await push._reader.read(65536)
-        except OSError as error:
-            raise ApiError("Push connection failed", phase="transport") from error
-        if not chunk:
-            raise ApiError("Push connection closed", phase="transport")
+        event_payload = await push.read_event()
+        if event_payload.get("sn") != device_id:
+            continue
+        protocol = _json_object(event_payload.get("data"))
+        if protocol is None:
+            continue
+        result = await _map_from_protocol(
+            protocol,
+            event=_event_number(event_payload),
+            http_client=http_client,
+            captures=captures,
+        )
+        if result is not None:
+            return result
 
-        for prefix, envelope in push._frames.feed(chunk):
-            await push._acknowledge(prefix)
-            event_payload = decode_push_envelope(envelope, push._push_key)
-            if event_payload.get("sn") != device_id:
-                continue
-            protocol = _json_object(event_payload.get("data"))
-            if protocol is None:
-                continue
-            result = await _map_from_protocol(
-                protocol,
-                event=_event_number(event_payload),
-                http_client=http_client,
-                captures=captures,
+
+def _received_info_types(
+    captures: list[dict[str, int | str | None]],
+) -> list[str]:
+    return [
+        info_type
+        for capture in captures
+        if isinstance((info_type := capture.get("infoType")), str)
+    ]
+
+
+def _map_trigger_result(response: httpx.Response) -> dict[str, int | bool | None]:
+    result: dict[str, int | bool | None] = {
+        "httpStatus": response.status_code,
+        "errno": None,
+        "accepted": False,
+    }
+    try:
+        payload = response.json()
+    except ValueError:
+        return result
+    if not isinstance(payload, dict):
+        return result
+
+    try:
+        response_errno = client_module._numeric_api_code(
+            payload.get("errno"),
+            status_code=response.status_code,
+        )
+        effective_errno = response_errno
+        if "errorCode" in payload:
+            error_code = client_module._numeric_api_code(
+                payload["errorCode"],
+                status_code=response.status_code,
             )
-            if result is not None:
-                return result
+            if error_code != 0:
+                effective_errno = error_code
+    except ApiError:
+        return result
+
+    result["errno"] = effective_errno
+    result["accepted"] = response.is_success and effective_errno == 0
+    return result
 
 
-async def _capture_map_once(
+@contextmanager
+def _capture_map_trigger_result(
+    http_client: httpx.AsyncClient,
+):
+    """Capture only safe metadata for one clean/cmd/send response."""
+
+    result: dict[str, int | bool | None] = {}
+    event_hooks = getattr(http_client, "event_hooks", None)
+    response_hooks = (
+        event_hooks.get("response") if isinstance(event_hooks, dict) else None
+    )
+    if not isinstance(response_hooks, list):
+        yield result
+        return
+
+    async def capture(response: httpx.Response) -> None:
+        if (
+            response.request.method != "POST"
+            or response.request.url.path != client_module.COMMAND_PATH
+        ):
+            return
+        await response.aread()
+        result.update(_map_trigger_result(response))
+
+    response_hooks.append(capture)
+    try:
+        yield result
+    finally:
+        response_hooks.remove(capture)
+
+
+def _print_map_trigger_result(result: dict[str, int | bool | None]) -> None:
+    status = result.get("httpStatus")
+    errno = result.get("errno")
+    accepted = result.get("accepted")
+    print(f"map trigger HTTP status: {status if status is not None else 'unknown'}")
+    print(f"map trigger errno: {errno if errno is not None else 'unknown'}")
+    print(f"map trigger accepted: {'true' if accepted else 'false'}")
+
+
+def _print_push_readiness(push: PushClient) -> None:
+    print(f"tcp connected: {str(getattr(push, '_tcp_connected', False)).lower()}")
+    print(
+        "push reader started: "
+        f"{str(getattr(push, '_reader_started', False)).lower()}"
+    )
+    print(
+        "push handshake sent: "
+        f"{str(getattr(push, '_handshake_sent', False)).lower()}"
+    )
+    print(
+        "push handshake response received: "
+        f"{str(getattr(push, '_handshake_response_received', False)).lower()}"
+    )
+    print(f"push ready: {str(getattr(push, '_ready', False)).lower()}")
+
+
+def _print_push_transport_diagnostics(push: PushClient) -> None:
+    get_counters = getattr(push, "diagnostic_counters", None)
+    counters = (
+        get_counters()
+        if get_counters is not None
+        else {
+            "tcpBytesReceived": 0,
+            "transportFramesReceived": 0,
+            "opcodeCounts": {},
+            "opcode3Acknowledged": 0,
+            "opcode3StructurallyValid": 0,
+            "opcode3StructurallyInvalid": 0,
+            "opcode3FramesQueued": 0,
+            "opcode3FramesEmptyPayload": 0,
+            "opcode3FramesMalformed": 0,
+            "opcode3FrameClassifications": [],
+            "applicationFramesQueued": 0,
+            "applicationFramesDispatched": 0,
+            "applicationEnvelopesParsed": 0,
+            "applicationEnvelopeParseSuccess": 0,
+            "applicationEnvelopeParseFailure": 0,
+            "applicationProductMismatch": 0,
+            "decryptSuccess": 0,
+            "decryptFailure": 0,
+            "jsonParseSuccess": 0,
+            "jsonParseFailure": 0,
+        }
+    )
+    opcode_counts = counters["opcodeCounts"]
+    print(f"tcp bytes received: {counters['tcpBytesReceived']}")
+    print(
+        "transport frames received: "
+        f"{counters['transportFramesReceived']}"
+    )
+    print(f"opcode 6 frames: {opcode_counts.get(6, 0)}")
+    print(f"opcode 3 frames: {opcode_counts.get(3, 0)}")
+    print(f"opcode 3 acknowledged: {counters['opcode3Acknowledged']}")
+    print(
+        "opcode 3 structurally valid: "
+        f"{counters['opcode3StructurallyValid']}"
+    )
+    print(
+        "opcode 3 structurally invalid: "
+        f"{counters['opcode3StructurallyInvalid']}"
+    )
+    print(f"opcode 3 queued frames: {counters['opcode3FramesQueued']}")
+    print(
+        "opcode 3 empty payload frames: "
+        f"{counters['opcode3FramesEmptyPayload']}"
+    )
+    print(f"opcode 3 malformed frames: {counters['opcode3FramesMalformed']}")
+    print(
+        "application frames queued: "
+        f"{counters['applicationFramesQueued']}"
+    )
+    print(
+        "application frames dispatched: "
+        f"{counters['applicationFramesDispatched']}"
+    )
+    print(
+        "application envelopes parsed: "
+        f"{counters['applicationEnvelopesParsed']}"
+    )
+    print(
+        "application envelope parse success: "
+        f"{counters['applicationEnvelopeParseSuccess']}"
+    )
+    print(
+        "application envelope parse failure: "
+        f"{counters['applicationEnvelopeParseFailure']}"
+    )
+    print(
+        "application product mismatch: "
+        f"{counters['applicationProductMismatch']}"
+    )
+    print(f"decrypt success: {counters['decryptSuccess']}")
+    print(f"decrypt failure: {counters['decryptFailure']}")
+    print(f"json parse success: {counters['jsonParseSuccess']}")
+    print(f"json parse failure: {counters['jsonParseFailure']}")
+    for frame in counters["opcode3FrameClassifications"]:
+        summary = (
+            f"opcode 3 frame {frame['index']}: "
+            f"frame length={frame['frameLength']}, "
+            f"payload length={frame['payloadLength']}, "
+            f"messages={frame['messageCount']}, "
+            f"product matches={frame['productMatches']}, "
+            f"classification={frame['classification']}"
+        )
+        if "reason" in frame:
+            summary += f", reason={frame['reason']}"
+        print(summary)
+
+
+async def _send_map_trigger(
+    client: Botslab360Client,
+    *,
+    device_id: str,
+    task_id: str,
+) -> None:
+    result: dict[str, int | bool | None]
+    with _capture_map_trigger_result(client._http_client) as result:
+        try:
+            await client._post_robot_request(
+                device_id=device_id,
+                info_type=COMPOSITE_INFO_TYPE,
+                data=json.dumps(LOAD_DATA, separators=(",", ":")),
+                task_id=task_id,
+                operation="diagnostic map request",
+            )
+        except ApiError as error:
+            if not result:
+                result.update(
+                    {
+                        "httpStatus": error.status_code,
+                        "errno": error.errno,
+                        "accepted": False,
+                    }
+                )
+            _print_map_trigger_result(result)
+            raise
+
+    if not result:
+        # Test doubles may not expose httpx response hooks. A successful private
+        # request still guarantees a 2xx response with effective errno zero.
+        result.update({"httpStatus": None, "errno": 0, "accepted": True})
+    _print_map_trigger_result(result)
+
+
+async def _capture_map(
     client: Botslab360Client,
     *,
     device_id: str,
@@ -469,40 +783,83 @@ async def _capture_map_once(
         client.session.push_key,
         host=client._push_host,
         port=client._push_port,
+        client_version=getattr(
+            client,
+            "_push_client_version",
+            DEFAULT_PUSH_CLIENT_VERSION,
+        ),
+        heartbeat_timeout=getattr(
+            client,
+            "_push_heartbeat_timeout",
+            DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
+        ),
+        heartbeat_interval=getattr(
+            client,
+            "_push_heartbeat_interval",
+            DEFAULT_PUSH_HEARTBEAT_INTERVAL,
+        ),
     )
-    async with push:
-        await client._post_robot_request(
-            device_id=device_id,
-            info_type=COMPOSITE_INFO_TYPE,
-            data=json.dumps(LOAD_DATA, separators=(",", ":")),
-            task_id=task_id,
-            operation="diagnostic map request",
-        )
-        try:
-            return await asyncio.wait_for(
+    readiness_reported = False
+    try:
+        async with push:
+            _print_push_readiness(push)
+            readiness_reported = True
+            waiter = asyncio.create_task(
                 _wait_for_map(
                     push,
                     device_id=device_id,
                     http_client=client._http_client,
                     captures=captures,
-                ),
-                timeout=timeout,
+                )
             )
-        except asyncio.TimeoutError as error:
-            raise ApiError(
-                "No 20002 map push received within the timeout",
-                phase="timeout",
-            ) from error
+            await asyncio.sleep(0)
+            print("map waiter armed: true")
+            try:
+                for attempt in (1, 2):
+                    print(f"map trigger attempt: {attempt}")
+                    await _send_map_trigger(
+                        client,
+                        device_id=device_id,
+                        task_id=task_id if attempt == 1 else str(uuid4()),
+                    )
+                    done, _ = await asyncio.wait({waiter}, timeout=timeout)
+                    if done:
+                        _print_push_transport_diagnostics(push)
+                        result = waiter.result()
+                        print(
+                            f"received infoTypes: {_received_info_types(captures)}"
+                        )
+                        print("20002 received: true")
+                        print("retrying map discovery: false")
+                        return result
+
+                    _print_push_transport_diagnostics(push)
+                    print(f"received infoTypes: {_received_info_types(captures)}")
+                    print("20002 received: false")
+                    print(
+                        "retrying map discovery: "
+                        f"{'true' if attempt == 1 else 'false'}"
+                    )
+
+                raise ApiError(
+                    "No 20002 map push received after two attempts",
+                    phase="timeout",
+                )
+            finally:
+                if not waiter.done():
+                    waiter.cancel()
+                    with suppress(asyncio.CancelledError):
+                        await waiter
+    except ApiError:
+        if not readiness_reported:
+            _print_push_readiness(push)
+        raise
 
 
 def _decode_room_name(value: object) -> str:
-    if not isinstance(value, str) or not value:
-        return ""
-    normalized = value.replace(" ", "+")
-    normalized += "=" * (-len(normalized) % 4)
     try:
-        return base64.b64decode(normalized, validate=False).decode("utf-8")
-    except (ValueError, UnicodeDecodeError):
+        return _production_decode_room_name(value)
+    except ApiError:
         return "<invalid Base64 name>"
 
 
@@ -545,76 +902,19 @@ def _captured_sweep_area_list(value: object) -> dict[str, Any] | None:
 def _gson_sweep_area(value: object) -> dict[str, Any] | None:
     """Recreate the fields serialized by Gson for one SweepArea instance."""
 
-    if not isinstance(value, dict):
-        return None
-    area: dict[str, Any] = {}
-    for field in SWEEP_AREA_REFERENCE_FIELDS:
-        field_value = value.get(field)
-        if field_value is not None:
-            area[field] = copy.deepcopy(field_value)
-    for field, default in SWEEP_AREA_PRIMITIVE_DEFAULTS.items():
-        field_value = value.get(field, default)
-        area[field] = field_value if isinstance(field_value, type(default)) else default
-    return area
+    return _production_gson_sweep_area(value)
 
 
 def _gson_sweep_area_list(value: object) -> dict[str, Any] | None:
     """Recreate Gson's default serialization of a SweepAreaList instance."""
 
-    if not isinstance(value, dict):
-        return None
-
-    result: dict[str, Any] = {}
-    active_ids = value.get("activeIds")
-    if active_ids is not None:
-        result["activeIds"] = copy.deepcopy(active_ids)
-    area_clean_active_id = value.get("areaCleanActiveId")
-    if area_clean_active_id is not None:
-        result["areaCleanActiveId"] = copy.deepcopy(area_clean_active_id)
-    result["autoOrder"] = (
-        value["autoOrder"] if isinstance(value.get("autoOrder"), bool) else False
-    )
-    result["cleanTimes"] = (
-        value["cleanTimes"]
-        if isinstance(value.get("cleanTimes"), int)
-        and not isinstance(value.get("cleanTimes"), bool)
-        else 0
-    )
-    result["isAttrOn"] = (
-        value["isAttrOn"]
-        if isinstance(value.get("isAttrOn"), int)
-        and not isinstance(value.get("isAttrOn"), bool)
-        else 0
-    )
-    result["mapId"] = (
-        value["mapId"]
-        if isinstance(value.get("mapId"), int)
-        and not isinstance(value.get("mapId"), bool)
-        else 0
-    )
-    areas = value.get("value")
-    if areas is not None:
-        result["value"] = [
-            area
-            for item in areas
-            if (area := _gson_sweep_area(item)) is not None
-        ] if isinstance(areas, list) else []
-    return result
+    return _production_gson_sweep_area_list(value)
 
 
 def _gson_json(value: object) -> str:
     """Encode JSON like the app's default Gson instance."""
 
-    encoded = json.dumps(value, ensure_ascii=True, separators=(",", ":"))
-    return (
-        encoded.replace("<", "\\u003c")
-        .replace(">", "\\u003e")
-        .replace("&", "\\u0026")
-        .replace("=", "\\u003d")
-        .replace("'", "\\u0027")
-        .replace("\u2028", "\\u2028")
-        .replace("\u2029", "\\u2029")
-    )
+    return _production_gson_json(value)
 
 
 def _sanitize_map(map_info: dict[str, Any]) -> dict[str, Any]:
@@ -736,8 +1036,9 @@ async def _post_room_cleaning(
     clean_id: str,
     area_setting_json: str,
     task_id: str,
+    mcc: str | None = None,
 ) -> dict[str, int | bool | None]:
-    """Send the explicitly confirmed diagnostic request exactly once."""
+    """Send one explicitly confirmed room-cleaning request attempt."""
 
     if client.session is None:
         raise AuthenticationError(
@@ -750,17 +1051,26 @@ async def _post_room_cleaning(
         "Connection": "keep-alive",
         "Cookie": (
             f"q={client._credentials.q};t={client._credentials.t};"
-            f"qid={client._credentials.qid};sid={client.session.sid}"
+            f"qid={client._credentials.qid};"
+            f"sid={quote_plus(client.session.sid)}"
         ),
-        "User-Agent": "QihooSuperApp_NoPods/11.1.0 (iPhone; iOS 14.8; Scale/3.00)",
-        "Accept-Language": "de-DE;q=1, uk-DE;q=0.9, en-DE;q=0.8",
+        "User-Agent": ANDROID_ROOM_USER_AGENT,
     }
     form = {
         "sn": device_id,
         "cleanId": clean_id,
         "areaSetting": area_setting_json,
         "taskid": task_id,
+        "from": "mpc_and",
+        "devType": "3",
+        "channel_id": ANDROID_CHANNEL_ID,
+        "appVer": ANDROID_APP_VERSION,
+        "lang": client._language,
     }
+    if mcc:
+        form["mcc"] = mcc
+    form["model"] = ANDROID_DEVICE_MODEL
+    form["manufacturer"] = ANDROID_DEVICE_MANUFACTURER
     try:
         response = await client._http_client.post(
             f"{client._base_url}/{ROOM_CLEANING_ENDPOINT}",
@@ -796,6 +1106,14 @@ async def _post_room_cleaning(
     effective_errno = (
         error_code if error_code not in (None, 0) else response_errno
     )
+    if effective_errno == 102:
+        client_module._raise_smart_api_error(
+            effective_errno,
+            operation="room-cleaning diagnostic request",
+            status_code=response.status_code,
+            response_errno=response_errno,
+            error_code=error_code,
+        )
     accepted = response.is_success and effective_errno == 0
     return {
         "httpStatus": response.status_code,
@@ -804,6 +1122,68 @@ async def _post_room_cleaning(
         "errorCode": error_code,
         "accepted": accepted,
     }
+
+
+async def _send_room_cleaning_attempt(
+    client: Botslab360Client,
+    *,
+    device_id: str,
+    clean_id: str,
+    area_setting_json: str,
+    task_id: str,
+    observation_seconds: float,
+) -> tuple[
+    dict[str, int | bool | None],
+    list[dict[str, int | str | None]],
+    dict[str, str] | None,
+]:
+    """Send once and observe push traffic using the current SmartSession."""
+
+    if client.session is None:
+        raise AuthenticationError(
+            "Authentication is required before the room-cleaning test",
+            phase="authentication",
+        )
+    push = PushClient(
+        client.session.sid,
+        client.session.push_key,
+        host=client._push_host,
+        port=client._push_port,
+        client_version=getattr(
+            client,
+            "_push_client_version",
+            DEFAULT_PUSH_CLIENT_VERSION,
+        ),
+        heartbeat_timeout=getattr(
+            client,
+            "_push_heartbeat_timeout",
+            DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
+        ),
+        heartbeat_interval=getattr(
+            client,
+            "_push_heartbeat_interval",
+            DEFAULT_PUSH_HEARTBEAT_INTERVAL,
+        ),
+    )
+    async with push:
+        http_result = await _post_room_cleaning(
+            client,
+            device_id=device_id,
+            clean_id=clean_id,
+            area_setting_json=area_setting_json,
+            task_id=task_id,
+        )
+        push_error = None
+        try:
+            push_events = await _capture_safe_push_events(
+                push,
+                device_id=device_id,
+                duration=observation_seconds,
+            )
+        except ApiError as error:
+            push_events = []
+            push_error = {"phase": error.phase}
+    return http_result, push_events, push_error
 
 
 def _record_protocol_info_types(
@@ -841,28 +1221,21 @@ async def _capture_safe_push_events(
     deadline = loop.time() + duration
     while (remaining := deadline - loop.time()) > 0:
         try:
-            chunk = await asyncio.wait_for(push._reader.read(65536), remaining)
+            event_payload = await asyncio.wait_for(
+                push.read_event(),
+                remaining,
+            )
         except asyncio.TimeoutError:
             break
-        except OSError as error:
-            raise ApiError("Push observation failed", phase="transport") from error
-        if not chunk:
-            break
-        for prefix, envelope in push._frames.feed(chunk):
-            await push._acknowledge(prefix)
-            try:
-                event_payload = decode_push_envelope(envelope, push._push_key)
-            except ApiError:
-                continue
-            if event_payload.get("sn") != device_id:
-                continue
-            protocol = _json_object(event_payload.get("data"))
-            if protocol is not None:
-                _record_protocol_info_types(
-                    captures,
-                    event=_event_number(event_payload),
-                    protocol=protocol,
-                )
+        if event_payload.get("sn") != device_id:
+            continue
+        protocol = _json_object(event_payload.get("data"))
+        if protocol is not None:
+            _record_protocol_info_types(
+                captures,
+                event=_event_number(event_payload),
+                protocol=protocol,
+            )
     return captures
 
 
@@ -913,41 +1286,35 @@ async def _run_confirmed_room_test(
             "sent": False,
         }
 
-    if client.session is None:
-        raise AuthenticationError(
-            "Authentication is required before the room-cleaning test",
-            phase="authentication",
-        )
-    push = PushClient(
-        client.session.sid,
-        client.session.push_key,
-        host=client._push_host,
-        port=client._push_port,
-    )
     form = prepared["form"]
-    async with push:
-        http_result = await _post_room_cleaning(
-            client,
-            device_id=device_id,
-            clean_id=form["cleanId"],
-            area_setting_json=form["areaSettingJson"],
-            task_id=form["taskid"],
-        )
-        print()
-        print("HTTP result:")
-        print(f"  status: {http_result['httpStatus']}")
-        print(f"  errno: {http_result['errno']}")
-        print(f"  accepted: {http_result['accepted']}")
-        push_error = None
-        try:
-            push_events = await _capture_safe_push_events(
-                push,
-                device_id=device_id,
-                duration=observation_seconds,
+    try:
+        http_result, push_events, push_error = (
+            await client._with_session_refresh(
+                lambda: _send_room_cleaning_attempt(
+                    client,
+                    device_id=device_id,
+                    clean_id=form["cleanId"],
+                    area_setting_json=form["areaSettingJson"],
+                    task_id=form["taskid"],
+                    observation_seconds=observation_seconds,
+                )
             )
-        except ApiError as error:
-            push_events = []
-            push_error = {"phase": error.phase}
+        )
+    except InvalidSessionError as error:
+        http_result = {
+            "httpStatus": error.status_code,
+            "errno": error.errno,
+            "responseErrno": error.response_errno,
+            "errorCode": error.error_code,
+            "accepted": False,
+        }
+        push_events = []
+        push_error = {"phase": error.phase}
+    print()
+    print("HTTP result:")
+    print(f"  status: {http_result['httpStatus']}")
+    print(f"  errno: {http_result['errno']}")
+    print(f"  accepted: {http_result['accepted']}")
 
     status = None
     status_error = None
@@ -1011,12 +1378,13 @@ def _write_diagnostic(path: Path, diagnostic: dict[str, Any]) -> None:
     print(f"Sanitized diagnostic written to: {path}")
 
 
-async def _run(args: argparse.Namespace, q: str, t: str) -> int:
+async def _run(args: argparse.Namespace, client: Botslab360Client) -> int:
     captures: list[dict[str, int | str | None]] = []
     real_test_capture: dict[str, Any] | None = None
     try:
-        async with Botslab360Client(q, t) as client:
-            await client.authenticate()
+        async with client:
+            if not await _authenticate_client(client):
+                return 3
             with _capture_discovery_support() as support_values:
                 devices = await client.get_devices()
             device = _select_device(devices, args.device_index)
@@ -1058,14 +1426,12 @@ async def _run(args: argparse.Namespace, q: str, t: str) -> int:
             print()
 
             task_id = str(uuid4())
-            map_info, source = await client._with_session_refresh(
-                lambda: _capture_map_once(
-                    client,
-                    device_id=device.id,
-                    task_id=task_id,
-                    timeout=args.timeout,
-                    captures=captures,
-                )
+            map_info, source = await _capture_map(
+                client,
+                device_id=device.id,
+                task_id=task_id,
+                timeout=args.timeout,
+                captures=captures,
             )
             safe_map = _sanitize_map(map_info)
             if args.clean_room is not None:
@@ -1179,6 +1545,19 @@ def _arguments() -> argparse.Namespace:
         help="inspect discovery support metadata without requesting a map",
     )
     parser.add_argument(
+        "--auth",
+        choices=("robot360", "qt"),
+        default="robot360",
+        help="authentication method (default: robot360)",
+    )
+    parser.add_argument(
+        "--identity",
+        type=Path,
+        default=DEFAULT_IDENTITY_PATH,
+        metavar="PATH",
+        help=f"device identity JSON path (default: {DEFAULT_IDENTITY_PATH.name})",
+    )
+    parser.add_argument(
         "--device-index",
         type=int,
         help="1-based discovery result to inspect (required for multiple devices)",
@@ -1204,8 +1583,11 @@ def _arguments() -> argparse.Namespace:
     parser.add_argument(
         "--timeout",
         type=float,
-        default=30.0,
-        help="seconds to wait for infoType 20002 (default: 30)",
+        default=20.0,
+        help=(
+            "seconds to wait per infoType 20002 attempt "
+            "(two attempts, default: 20)"
+        ),
     )
     parser.add_argument(
         "--output",
@@ -1219,15 +1601,44 @@ def main() -> int:
     logging.getLogger("httpx").disabled = True
     logging.getLogger("httpcore").disabled = True
     args = _arguments()
-    q = os.environ.get("BOTSLAB360_Q")
-    t = os.environ.get("BOTSLAB360_T")
-    if not q or not t:
-        print(
-            "Set BOTSLAB360_Q and BOTSLAB360_T before running this script.",
-            file=sys.stderr,
-        )
-        return 1
-    return asyncio.run(_run(args, q, t))
+    if args.auth == "qt":
+        q = os.environ.get("BOTSLAB360_Q")
+        t = os.environ.get("BOTSLAB360_T")
+        if not q or not t:
+            print(
+                "Set BOTSLAB360_Q and BOTSLAB360_T for --auth qt.",
+                file=sys.stderr,
+            )
+            return 1
+        client = Botslab360Client(q, t)
+    else:
+        try:
+            identity, created = _load_or_create_identity(args.identity)
+        except (
+            OSError,
+            ValueError,
+            KeyError,
+            TypeError,
+            json.JSONDecodeError,
+        ) as error:
+            print(
+                f"Could not load device identity: {type(error).__name__}",
+                file=sys.stderr,
+            )
+            return 1
+        action = "Created" if created else "Loaded"
+        print(f"{action} device identity: {args.identity.expanduser()}")
+        account = input("Account: ").strip()
+        password = getpass("Password: ")
+        try:
+            client = _robot360_client(account, password, identity)
+        except ValueError as error:
+            print(
+                f"Could not create credential client: {type(error).__name__}",
+                file=sys.stderr,
+            )
+            return 1
+    return asyncio.run(_run(args, client))
 
 
 if __name__ == "__main__":
