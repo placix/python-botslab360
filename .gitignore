@@ -14,8 +14,14 @@ build/
 
 # Test/cache
 .pytest_cache/
+.mypy_cache/
 .coverage
 htmlcov/
+
+# Local protocol captures
+tmp/
+*.pcap
+*.pcapng
 
 # Local credential-login identity (non-secret, but installation-specific)
 .botslab360-device-identity.json

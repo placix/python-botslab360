@@ -45,11 +45,24 @@ def test_get_status_connects_push_before_sending_http_request(monkeypatch) -> No
         )
 
         class FakePushClient:
-            def __init__(self, sid, push_key, *, host, port):
+            def __init__(
+                self,
+                sid,
+                push_key,
+                *,
+                host,
+                port,
+                client_version,
+                heartbeat_timeout,
+                heartbeat_interval,
+            ):
                 assert sid == SID
                 assert push_key == PUSH_KEY
                 assert host == "push.synthetic.invalid"
                 assert port == 1234
+                assert client_version == "1.7"
+                assert heartbeat_timeout == 30
+                assert heartbeat_interval == 25.0
 
             async def __aenter__(self):
                 events.append("push-connected")
@@ -193,7 +206,7 @@ def test_status_refresh_reopens_push_with_new_session(monkeypatch) -> None:
         )
 
         class FakePushClient:
-            def __init__(self, sid, push_key, *, host, port):
+            def __init__(self, sid, push_key, **kwargs):
                 push_sessions.append((sid, push_key))
 
             async def __aenter__(self):

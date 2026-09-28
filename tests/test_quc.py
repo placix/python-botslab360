@@ -215,6 +215,16 @@ def test_explicit_credential_backend_selects_only_its_profile(
             assert client.auth_backend is backend
             assert client._quc_auth is not None
             assert client._quc_auth.url == expected_url
+            if backend is AuthBackend.ROBOT360:
+                assert client._push_port == 80
+                assert client._push_client_version == "1.21"
+                assert client._push_heartbeat_timeout == 20
+                assert client._push_heartbeat_interval == 15.0
+            else:
+                assert client._push_port == 443
+                assert client._push_client_version == "1.7"
+                assert client._push_heartbeat_timeout == 30
+                assert client._push_heartbeat_interval == 25.0
 
     run(scenario())
 
