@@ -127,7 +127,10 @@ async def run_room_api_test(
 
             print("Public get_rooms(): success")
             print(f"rooms: {len(rooms)}")
-            print("ID / Name / room_type / mode / clean_times / fan_mode / water_pump")
+            print(
+                "ID / Name / room_type / vendor_mode / clean_times / "
+                "fan_mode / water_pump"
+            )
             for room in rooms:
                 print(
                     f"{room.id} / {room.name} / {room.room_type} / "

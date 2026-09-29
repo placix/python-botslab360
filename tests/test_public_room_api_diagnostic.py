@@ -32,7 +32,7 @@ ROOMS = [
         clean_times=2,
         fan_mode="max",
         water_pump=1,
-        mode=2,
+        mode="mode_tiny_carpet",
     )
 ]
 
@@ -144,9 +144,10 @@ def test_public_room_flow_uses_only_public_operations(
     output = capsys.readouterr().out
     assert "Public get_rooms(): success" in output
     assert (
-        "ID / Name / room_type / mode / clean_times / fan_mode / water_pump" in output
+        "ID / Name / room_type / vendor_mode / clean_times / fan_mode / water_pump"
+        in output
     )
-    assert "1 / Bad / bathroom / 2 / 2 / max / 1" in output
+    assert "1 / Bad / bathroom / mode_tiny_carpet / 2 / max / 1" in output
     assert "Public clean_rooms([1]): success" in output
     assert "PUBLIC ROOM API LIVE STATUS: PASS" in output
     for secret in (
@@ -213,7 +214,7 @@ def test_rooms_only_prints_profiles_without_cleaning(
     assert result == 0
     assert calls == ["authenticate", "get_devices", ("get_rooms", DEVICE)]
     output = capsys.readouterr().out
-    assert "1 / Bad / bathroom / 2 / 2 / max / 1" in output
+    assert "1 / Bad / bathroom / mode_tiny_carpet / 2 / max / 1" in output
     assert "Room cleaning: not requested (--rooms-only)" in output
     assert "PUBLIC ROOM PROFILE DIAGNOSTIC STATUS: PASS" in output
     assert "private-account" not in output

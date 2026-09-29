@@ -197,13 +197,12 @@ map coordinate system (integer millimetres, original point order). Missing or
 malformed polygons are exposed as `None`; raw MapInfo data is not exposed.
 
 The Android room-attribute UI defines one or two cleaning passes, four suction
-modes, three mopping water levels, and three cleaning modes. Optional settings
-can override the current attributes for selected rooms in one cleaning request:
+modes, and three mopping water levels. Optional settings can override these
+verified attributes for selected rooms in one cleaning request:
 
 ```python
 from botslab360 import (
     RoomCleaningSettings,
-    RoomCleaningMode,
     RoomFanMode,
     RoomWaterLevel,
 )
@@ -213,7 +212,6 @@ await client.clean_rooms(
     [1],
     room_settings={
         1: RoomCleaningSettings(
-            mode=RoomCleaningMode.SWEEP,
             clean_times=2,
             fan_mode=RoomFanMode.STRONG,
             water_pump=RoomWaterLevel.MEDIUM,
@@ -230,11 +228,17 @@ Water levels are `1` (low), `2` (medium), and `3` (high). An existing vendor
 `waterPump=0` value is preserved when not overridden, but `0` is not exposed as
 an "off" choice because that meaning has not been confirmed.
 
-Cleaning modes are `1` (sweep and mop), `2` (sweep), and `3` (mop). Mode `2`
-has been verified on a real robot; the assignments for modes `1` and `3` remain
-provisional pending real-device verification. `Room.mode` preserves unknown
-integer values reported by future vendor firmware, while outgoing overrides are
-limited to the currently supported values.
+`Room.mode` preserves the optional raw `SweepArea.mode` vendor string. Analysis
+of the Android app found carpet-related values such as `mode_big_carpet` and
+`mode_tiny_carpet`; this field is not a verified room sweep/mop selector. The
+deprecated `RoomCleaningMode` compatibility enum and
+`RoomCleaningSettings.mode` field must not be used for new code. Setting
+`RoomCleaningSettings.mode` is rejected rather than writing an unverified value
+to a cleaning request.
+
+The Android app also has a separate `SweepStrategy.cleanMode` field with partial
+evidence for mop and sweep values, but its relationship to room-cleaning
+requests has not yet been verified.
 
 ## Status information
 

@@ -111,7 +111,7 @@ class Room:
     fan_mode: str | None
     water_pump: int | None
     vertices: tuple[tuple[int, int], ...] | None = None
-    mode: int | None = None
+    mode: str | None = None
 
 
 class RoomFanMode(str, Enum):
@@ -132,7 +132,11 @@ class RoomWaterLevel(IntEnum):
 
 
 class RoomCleaningMode(IntEnum):
-    """Cleaning modes supported by the Android room-attribute UI."""
+    """Deprecated unverified numeric cleaning-mode values.
+
+    Retained for import compatibility with 0.4.2. These values must not be
+    written to the vendor ``SweepArea.mode`` field.
+    """
 
     SWEEP_AND_MOP = 1
     SWEEP = 2
@@ -144,7 +148,11 @@ ROOM_CLEAN_TIMES = (1, 2)
 
 @dataclass(frozen=True, slots=True)
 class RoomCleaningSettings:
-    """Optional cleaning attributes for one room."""
+    """Optional cleaning attributes for one room.
+
+    ``mode`` is retained for 0.4.2 API compatibility but is unsupported and
+    rejected when set because the vendor request field was misidentified.
+    """
 
     clean_times: int | None = None
     fan_mode: str | None = None

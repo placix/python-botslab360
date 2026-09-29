@@ -73,14 +73,19 @@ Preserve existing behavior unless the requested task explicitly changes it.
 
 Do not modify protocol behavior based only on assumptions. Vendor/protocol behavior should be backed by existing tests, captured diagnostics, or verified behavior.
 
-Current room cleaning-mode mapping:
+`SweepArea.mode` is a nullable vendor string used by carpet-related behavior in
+the analyzed Android app. It is not a verified room sweep/mop selector. Do not
+interpret it as numeric values or write numeric cleaning modes into it.
 
-- `1` = sweep and mop (provisional)
-- `2` = sweep (verified on a real robot)
-- `3` = mop (provisional)
+The separate `SweepStrategy.cleanMode` currently has partial static evidence
+for `1` = mop and `2` = sweep, but its relationship to room cleaning requests
+has not been verified. Do not wire it into room cleaning without capture-backed
+evidence.
 
-Keep this mapping centralized through the public `RoomCleaningMode` enum. Values
-`1` and `3` remain provisional pending real-device verification.
+The next cleaning-mode verification should capture the same room through the
+vendor app for sweep, mop, and sweep plus mop, then compare the current
+`MapInfo.smartArea`, any `SweepStrategy`, the exact outgoing
+`setAreaAndCleaning` request, and related commands sent immediately beforehand.
 
 ## Validation
 
