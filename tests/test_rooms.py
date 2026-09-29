@@ -17,6 +17,7 @@ from botslab360 import (
     Device,
     InvalidSessionError,
     Room,
+    RoomCleaningMode,
     RoomCleaningSettings,
     RoomFanMode,
     RoomWaterLevel,
@@ -56,7 +57,7 @@ def smart_area() -> dict:
             "forbidType": "none",
             "id": room_id,
             "material": 0,
-            "mode": "normal",
+            "mode": 2,
             "name": encoded_name(f"Room {room_id}"),
             "radius": 0,
             "relativeRoom": -1,
@@ -143,6 +144,7 @@ def test_map_info_parses_ten_public_rooms() -> None:
         clean_times=2,
         fan_mode="max",
         water_pump=2,
+        mode=2,
     )
     assert parsed.rooms[9].room_type is None
     assert parsed.map_id == 1
@@ -213,6 +215,22 @@ def test_room_model_remains_compatible_without_vertices() -> None:
     room = Room(1, "Bad", None, 2, "max", 0)
 
     assert room.vertices is None
+    assert room.mode is None
+
+
+@pytest.mark.parametrize("mode", [1, 2, 3, 99])
+def test_room_mode_parsing_preserves_supported_and_unknown_values(mode: int) -> None:
+    payload = map_info()
+    payload["smartArea"]["value"][1]["mode"] = mode
+
+    assert parse_room_map(payload).rooms[1].mode == mode
+
+
+def test_room_mode_parsing_ignores_malformed_values() -> None:
+    payload = map_info()
+    payload["smartArea"]["value"][1]["mode"] = "future-mode"
+
+    assert parse_room_map(payload).rooms[1].mode is None
 
 
 def test_public_room_setting_choices_match_android_values() -> None:
@@ -224,6 +242,19 @@ def test_public_room_setting_choices_match_android_values() -> None:
         "max",
     ]
     assert [level.value for level in RoomWaterLevel] == [1, 2, 3]
+    assert [mode.value for mode in RoomCleaningMode] == [1, 2, 3]
+
+
+@pytest.mark.parametrize("mode", [1, 2, 3])
+def test_prepare_area_setting_accepts_supported_cleaning_modes(mode: int) -> None:
+    room_map = parse_room_map(map_info())
+
+    result = json.loads(
+        prepare_area_setting(room_map, [1], {1: RoomCleaningSettings(mode=mode)})
+    )
+
+    assert result["value"][1]["mode"] == mode
+    assert result["value"][0] == room_map.area_setting["value"][0]
 
 
 @pytest.mark.parametrize(
@@ -232,13 +263,20 @@ def test_public_room_setting_choices_match_android_values() -> None:
         (RoomCleaningSettings(clean_times=1), {"cleanTimes": 1}),
         (RoomCleaningSettings(fan_mode="quiet"), {"windMode": "quiet"}),
         (RoomCleaningSettings(water_pump=3), {"waterPump": 3}),
+        (RoomCleaningSettings(mode=2), {"mode": 2}),
         (
             RoomCleaningSettings(
                 clean_times=1,
                 fan_mode=RoomFanMode.AUTO,
                 water_pump=RoomWaterLevel.LOW,
+                mode=RoomCleaningMode.SWEEP_AND_MOP,
             ),
-            {"cleanTimes": 1, "windMode": "auto", "waterPump": 1},
+            {
+                "cleanTimes": 1,
+                "windMode": "auto",
+                "waterPump": 1,
+                "mode": 1,
+            },
         ),
     ],
 )
@@ -300,6 +338,10 @@ def test_prepare_area_setting_supports_different_selected_room_settings() -> Non
         (RoomCleaningSettings(water_pump=4), ValueError),
         (RoomCleaningSettings(water_pump=True), TypeError),
         (RoomCleaningSettings(water_pump="1"), TypeError),  # type: ignore[arg-type]
+        (RoomCleaningSettings(mode=0), ValueError),
+        (RoomCleaningSettings(mode=4), ValueError),
+        (RoomCleaningSettings(mode=True), TypeError),
+        (RoomCleaningSettings(mode="2"), TypeError),  # type: ignore[arg-type]
         (object(), TypeError),
     ],
 )
@@ -477,13 +519,15 @@ def test_clean_rooms_sends_per_room_overrides_through_public_api(
         (RoomCleaningSettings(clean_times=1), {"cleanTimes": 1}),
         (RoomCleaningSettings(fan_mode="quiet"), {"windMode": "quiet"}),
         (RoomCleaningSettings(water_pump=3), {"waterPump": 3}),
+        (RoomCleaningSettings(mode=2), {"mode": 2}),
         (
             RoomCleaningSettings(
                 clean_times=1,
                 fan_mode="strong",
                 water_pump=3,
+                mode=3,
             ),
-            {"cleanTimes": 1, "windMode": "strong", "waterPump": 3},
+            {"cleanTimes": 1, "windMode": "strong", "waterPump": 3, "mode": 3},
         ),
     ],
 )
@@ -603,6 +647,9 @@ def test_clean_rooms_preserves_vendor_water_pump_zero(monkeypatch) -> None:
         ([1], {1: RoomCleaningSettings(water_pump=0)}, ValueError),
         ([1], {1: RoomCleaningSettings(water_pump=4)}, ValueError),
         ([1], {1: RoomCleaningSettings(water_pump=True)}, TypeError),
+        ([1], {1: RoomCleaningSettings(mode=0)}, ValueError),
+        ([1], {1: RoomCleaningSettings(mode=4)}, ValueError),
+        ([1], {1: RoomCleaningSettings(mode=True)}, TypeError),
         ([1], {1: object()}, TypeError),
         ([1], {6: RoomCleaningSettings(clean_times=1)}, ValueError),
         ([1], {True: RoomCleaningSettings(clean_times=1)}, TypeError),

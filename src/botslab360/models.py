@@ -111,6 +111,7 @@ class Room:
     fan_mode: str | None
     water_pump: int | None
     vertices: tuple[tuple[int, int], ...] | None = None
+    mode: int | None = None
 
 
 class RoomFanMode(str, Enum):
@@ -130,6 +131,14 @@ class RoomWaterLevel(IntEnum):
     HIGH = 3
 
 
+class RoomCleaningMode(IntEnum):
+    """Cleaning modes supported by the Android room-attribute UI."""
+
+    SWEEP_AND_MOP = 1
+    SWEEP = 2
+    MOP = 3
+
+
 ROOM_CLEAN_TIMES = (1, 2)
 
 
@@ -140,6 +149,7 @@ class RoomCleaningSettings:
     clean_times: int | None = None
     fan_mode: str | None = None
     water_pump: int | None = None
+    mode: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

@@ -73,6 +73,15 @@ Preserve existing behavior unless the requested task explicitly changes it.
 
 Do not modify protocol behavior based only on assumptions. Vendor/protocol behavior should be backed by existing tests, captured diagnostics, or verified behavior.
 
+Current room cleaning-mode mapping:
+
+- `1` = sweep and mop (provisional)
+- `2` = sweep (verified on a real robot)
+- `3` = mop (provisional)
+
+Keep this mapping centralized through the public `RoomCleaningMode` enum. Values
+`1` and `3` remain provisional pending real-device verification.
+
 ## Validation
 
 Before considering a code task complete, run as applicable:

@@ -18,6 +18,7 @@ from .exceptions import ApiError
 from .models import (
     ROOM_CLEAN_TIMES,
     Room,
+    RoomCleaningMode,
     RoomCleaningSettings,
     RoomFanMode,
     RoomWaterLevel,
@@ -73,6 +74,7 @@ class RoomMap:
 
 _ROOM_FAN_MODE_VALUES = frozenset(mode.value for mode in RoomFanMode)
 _ROOM_WATER_LEVEL_VALUES = frozenset(level.value for level in RoomWaterLevel)
+_ROOM_CLEANING_MODE_VALUES = frozenset(mode.value for mode in RoomCleaningMode)
 
 
 def validate_room_cleaning_settings(settings: object) -> RoomCleaningSettings:
@@ -99,6 +101,11 @@ def validate_room_cleaning_settings(settings: object) -> RoomCleaningSettings:
             raise TypeError("water_pump must be an integer")
         if settings.water_pump not in _ROOM_WATER_LEVEL_VALUES:
             raise ValueError("water_pump must be 1, 2, or 3")
+    if settings.mode is not None:
+        if isinstance(settings.mode, bool) or not isinstance(settings.mode, int):
+            raise TypeError("mode must be an integer")
+        if settings.mode not in _ROOM_CLEANING_MODE_VALUES:
+            raise ValueError("mode must be 1, 2, or 3")
     return settings
 
 
@@ -273,6 +280,7 @@ def parse_room_map(map_info: object) -> RoomMap:
                 fan_mode=_optional_str(area.get("windMode")),
                 water_pump=_optional_int(area.get("waterPump")),
                 vertices=_room_vertices(area.get("vertexs")),
+                mode=_optional_int(area.get("mode")),
             )
         )
     return RoomMap(
@@ -299,6 +307,8 @@ def _apply_room_settings(
             area["windMode"] = settings.fan_mode
         if settings.water_pump is not None:
             area["waterPump"] = settings.water_pump
+        if settings.mode is not None:
+            area["mode"] = settings.mode
 
 
 def prepare_area_setting(
