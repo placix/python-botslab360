@@ -94,6 +94,52 @@ Expected result:
 
 LF/CRLF informational warnings on Windows are not by themselves a reason to rewrite files or normalize the repository.
 
+## Release notes
+
+Every GitHub Release must contain a meaningful, non-empty release description.
+A generated changelog link may be included, but it must not be the only release
+description.
+
+Before creating a release:
+
+1. Review the commits and changes since the previous release or tag.
+2. Summarize only user-relevant or developer-relevant changes actually included
+   in the release.
+3. Mention important compatibility, dependency, migration, authentication,
+   configuration, or behavioral changes when applicable.
+4. Mention notable bug fixes and newly added features.
+5. Do not invent changes that are not present in the diff or history.
+6. Do not include credentials, internal secrets, or sensitive diagnostic details.
+
+For library releases, mention when applicable:
+
+- new public APIs
+- authentication or session behavior changes
+- protocol or backend support changes
+- breaking changes
+- supported Python-version changes
+- dependency changes
+- fixes relevant to downstream integrations
+
+Use a concise structure such as:
+
+```markdown
+## What's changed
+
+- Added ...
+- Fixed ...
+- Improved ...
+
+## Compatibility
+
+- Requires ...
+- No migration required.
+```
+
+Omit sections that are not relevant. For development or test releases, state
+explicitly that the release is intended for testing when appropriate. After
+creating the release, verify that the GitHub Release body is not empty.
+
 ## Git workflow
 
 At the beginning:
