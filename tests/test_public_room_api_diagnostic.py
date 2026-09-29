@@ -24,7 +24,17 @@ IDENTITY = DeviceIdentity(
     m2="12345678-1234-5678-9234-567812345678",
 )
 DEVICE = Device("synthetic-device", "Synthetic Robot", "test", True)
-ROOMS = [Room(1, "Bad", "bathroom", 1, "max", 2)]
+ROOMS = [
+    Room(
+        1,
+        "Bad",
+        "bathroom",
+        clean_times=2,
+        fan_mode="max",
+        water_pump=1,
+        mode=2,
+    )
+]
 
 
 def _script_path() -> Path:
@@ -133,6 +143,10 @@ def test_public_room_flow_uses_only_public_operations(
     ]
     output = capsys.readouterr().out
     assert "Public get_rooms(): success" in output
+    assert (
+        "ID / Name / room_type / mode / clean_times / fan_mode / water_pump" in output
+    )
+    assert "1 / Bad / bathroom / 2 / 2 / max / 1" in output
     assert "Public clean_rooms([1]): success" in output
     assert "PUBLIC ROOM API LIVE STATUS: PASS" in output
     for secret in (
@@ -143,6 +157,67 @@ def test_public_room_flow_uses_only_public_operations(
         "synthetic-key",
     ):
         assert secret not in output
+
+
+def test_rooms_only_prints_profiles_without_cleaning(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    module = _load_diagnostic()
+    calls: list[object] = []
+
+    class FakeClient:
+        session = SimpleNamespace()
+
+        @classmethod
+        def from_credentials(cls, **kwargs: object) -> FakeClient:
+            return cls()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args: object):
+            pass
+
+        async def authenticate(self):
+            calls.append("authenticate")
+
+        async def get_devices(self):
+            calls.append("get_devices")
+            return [DEVICE]
+
+        async def get_rooms(self, device: Device):
+            calls.append(("get_rooms", device))
+            return ROOMS
+
+        async def clean_rooms(self, device: Device, room_ids: list[int]):
+            calls.append(("clean_rooms", device, room_ids))
+
+    monkeypatch.setattr(module, "Botslab360Client", FakeClient)
+    monkeypatch.setattr(
+        module,
+        "input",
+        lambda prompt: pytest.fail(f"Unexpected input prompt: {prompt}"),
+        raising=False,
+    )
+
+    result = asyncio.run(
+        module.run_room_api_test(
+            "private-account",
+            "private-password",
+            IDENTITY,
+            rooms_only=True,
+        )
+    )
+
+    assert result == 0
+    assert calls == ["authenticate", "get_devices", ("get_rooms", DEVICE)]
+    output = capsys.readouterr().out
+    assert "1 / Bad / bathroom / 2 / 2 / max / 1" in output
+    assert "Room cleaning: not requested (--rooms-only)" in output
+    assert "PUBLIC ROOM PROFILE DIAGNOSTIC STATUS: PASS" in output
+    assert "private-account" not in output
+    assert "private-password" not in output
 
 
 def test_cleaning_requires_exact_confirmation(

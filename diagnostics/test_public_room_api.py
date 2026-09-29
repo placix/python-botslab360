@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import tempfile
@@ -80,6 +81,7 @@ async def run_room_api_test(
     identity: DeviceIdentity,
     *,
     captcha_path: Path | None = None,
+    rooms_only: bool = False,
 ) -> int:
     """Exercise only the public device, room, and cleaning APIs."""
 
@@ -125,9 +127,21 @@ async def run_room_api_test(
 
             print("Public get_rooms(): success")
             print(f"rooms: {len(rooms)}")
-            print("ID / Name / room_type")
+            print("ID / Name / room_type / mode / clean_times / fan_mode / water_pump")
             for room in rooms:
-                print(f"{room.id} / {room.name} / {room.room_type}")
+                print(
+                    f"{room.id} / {room.name} / {room.room_type} / "
+                    f"{room.mode} / {room.clean_times} / "
+                    f"{room.fan_mode} / {room.water_pump}"
+                )
+
+            if rooms_only:
+                print("Room cleaning: not requested (--rooms-only)")
+                print(
+                    f"Session refresh occurred: {'yes' if session_refreshed else 'no'}"
+                )
+                print("PUBLIC ROOM PROFILE DIAGNOSTIC STATUS: PASS")
+                return 0
 
             selected_room = next(
                 (room for room in rooms if room.id == ROOM_ID),
@@ -167,6 +181,14 @@ async def run_room_api_test(
 
 
 def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--rooms-only",
+        action="store_true",
+        help="Print public room profile values without offering to clean a room.",
+    )
+    args = parser.parse_args()
+
     try:
         identity, created = _load_or_create_identity(IDENTITY_PATH)
     except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
@@ -177,7 +199,14 @@ def main() -> int:
     print(f"{action} device identity: {IDENTITY_PATH}")
     account = input("Account: ").strip()
     password = getpass("Password: ")
-    return asyncio.run(run_room_api_test(account, password, identity))
+    return asyncio.run(
+        run_room_api_test(
+            account,
+            password,
+            identity,
+            rooms_only=args.rooms_only,
+        )
+    )
 
 
 if __name__ == "__main__":
