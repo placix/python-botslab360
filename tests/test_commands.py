@@ -80,9 +80,7 @@ def test_command_sends_verified_request(
             assert request.headers["accept-language"] == (
                 "de-DE;q=1, uk-DE;q=0.9, en-DE;q=0.8"
             )
-            assert request.headers["cookie"] == (
-                f"q={Q};t={T};qid={QID};sid={SID}"
-            )
+            assert request.headers["cookie"] == (f"q={Q};t={T};qid={QID};sid={SID}")
 
             form = parse_qs((await request.aread()).decode(), keep_blank_values=True)
             expected_fields = {

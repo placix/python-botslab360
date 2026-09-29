@@ -76,13 +76,28 @@ def test_credentials_and_session_repr_redact_all_sensitive_values() -> None:
         assert secret not in session_repr
 
 
+def test_client_exposes_reusable_credentials_read_only() -> None:
+    async def scenario() -> None:
+        async with httpx.AsyncClient() as http_client:
+            client = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
+
+            assert client.credentials == credentials_from_tokens(Q_RAW, T_RAW)
+            assert "credentials" not in client.__dict__
+            with pytest.raises(AttributeError):
+                client.credentials = credentials_from_tokens(Q_RAW, T_RAW)
+
+    run(scenario())
+
+
 def test_authenticate_sends_poc_request_and_parses_string_errno() -> None:
     async def scenario() -> None:
         async def handler(request: httpx.Request) -> httpx.Response:
             assert request.url == "https://q.smart.360.cn/common/user/login"
             assert request.headers["user-agent"] == "qhsa-iphone-11.1.0"
             assert request.headers["accept"] == "*/*"
-            assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+            assert (
+                request.headers["content-type"] == "application/x-www-form-urlencoded"
+            )
             assert request.headers["connection"] == "keep-alive"
             assert request.headers["accept-language"] == (
                 "de-DE;q=1, uk-DE;q=0.9, en-DE;q=0.8"
@@ -106,8 +121,7 @@ def test_authenticate_sends_poc_request_and_parses_string_errno() -> None:
                 "brand": "iPhone",
                 "model": "iPhone10,5",
                 "notifyId": (
-                    "aa0ad645269de676a5ee6a728ba13b777"
-                    "ed3d4aa4d0e08a578097fbe78768b02"
+                    "aa0ad645269de676a5ee6a728ba13b777ed3d4aa4d0e08a578097fbe78768b02"
                 ),
                 "lang": "de_DE",
                 "imei": "f3bc82b802bd91a51d0dcc6499efeba3",
@@ -151,9 +165,7 @@ def test_smart_login_diagnostic_redacts_credentials_and_session() -> None:
                 200,
                 json={
                     "errno": 0,
-                    "errmsg": (
-                        f"OK {Q_RAW} {T_RAW} {QID} {sid} {push_key}"
-                    ),
+                    "errmsg": (f"OK {Q_RAW} {T_RAW} {QID} {sid} {push_key}"),
                     "data": {"sid": sid, "pushKey": push_key},
                 },
             )
@@ -161,9 +173,7 @@ def test_smart_login_diagnostic_redacts_credentials_and_session() -> None:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         ) as http_client:
-            result = await BotslabAuth(http_client)._diagnose_login_once(
-                credentials
-            )
+            result = await BotslabAuth(http_client)._diagnose_login_once(credentials)
 
         assert result.http_status == 200
         assert result.errno == 0
@@ -183,9 +193,13 @@ def test_smart_login_diagnostic_redacts_credentials_and_session() -> None:
 def test_errno_mapping(errno: object, exception_type: type[ApiError]) -> None:
     async def scenario() -> None:
         def handler(request: httpx.Request) -> httpx.Response:
-            return httpx.Response(200, json={"errno": errno, "errmsg": "synthetic error"})
+            return httpx.Response(
+                200, json={"errno": errno, "errmsg": "synthetic error"}
+            )
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
             with pytest.raises(exception_type) as raised:
                 await client.authenticate()
@@ -200,7 +214,9 @@ def test_invalid_errno_is_rejected(errno: object) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"errno": errno})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
             with pytest.raises(ApiError, match="invalid errno"):
                 await client.authenticate()
@@ -213,7 +229,9 @@ def test_nonzero_error_code_takes_precedence_over_errno() -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"errno": 0, "errorCode": "103"})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
             with pytest.raises(AuthenticationError) as raised:
                 await client.authenticate()
@@ -231,7 +249,9 @@ def test_success_response_requires_sid_and_push_key(data: object) -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(200, json={"errno": 0, "data": data})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
             with pytest.raises(ApiError):
                 await client.authenticate()
@@ -246,7 +266,9 @@ def test_http_error_does_not_include_response_body() -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             return httpx.Response(503, text=secret_body)
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q_RAW, T_RAW, http_client=http_client)
             with pytest.raises(ApiError) as raised:
                 await client.authenticate()

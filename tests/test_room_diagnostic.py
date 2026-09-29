@@ -155,18 +155,12 @@ def test_map_waiter_ignores_preceding_pushes_and_finds_20002(
             return self._frames.feed(chunk)[0]
 
         async def read_event(self):
-            prefix, envelope = await self.read_frame()
-            await self._acknowledge(prefix)
-            return module.decode_push_envelope(envelope, self._push_key)
+            _prefix, envelope = await self.read_frame()
+            return envelope
 
         async def _acknowledge(self, prefix):
             pass
 
-    monkeypatch.setattr(
-        module,
-        "decode_push_envelope",
-        lambda envelope, push_key: envelope,
-    )
     captures = []
 
     result = asyncio.run(
@@ -188,9 +182,7 @@ def test_map_waiter_receives_fragmented_pushes_from_central_reader(
     module = _diagnostic_module()
     map_info = {"mapId": 1, "cleanId": "synthetic-clean-id"}
     status_packet = _application_packet(_push_event("20001", {}))
-    map_packet = _application_packet(
-        _push_event("20002", json.dumps(map_info))
-    )
+    map_packet = _application_packet(_push_event("20002", json.dumps(map_info)))
     acknowledgement = _bind_ack()
     handshake_written = asyncio.Event()
 
@@ -401,9 +393,11 @@ def test_map_waiter_is_armed_before_trigger_and_keeps_one_push_client(
     assert triggers[0]["device_id"] == "synthetic-device"
     assert triggers[0]["task_id"] == "synthetic-task-id"
     assert json.loads(triggers[0]["data"]) == module.LOAD_DATA
-    assert [
-        command["infoType"] for command in module.LOAD_DATA["cmds"]
-    ] == ["20001", "21014", "21011"]
+    assert [command["infoType"] for command in module.LOAD_DATA["cmds"]] == [
+        "20001",
+        "21014",
+        "21011",
+    ]
     assert module.LOAD_DATA["cmds"][2]["data"] == {
         "startPos": 0,
         "userId": 0,

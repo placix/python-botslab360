@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from typing import ClassVar
 from urllib.parse import parse_qs
 
 import httpx
@@ -100,8 +101,8 @@ def map_event(payload: dict | None = None) -> dict:
 
 
 class FakePushClient:
-    events: list[dict] = []
-    instances: list["FakePushClient"] = []
+    events: ClassVar[list[dict]] = []
+    instances: ClassVar[list[FakePushClient]] = []
 
     def __init__(self, sid, push_key, **kwargs):
         self.sid = sid
@@ -287,23 +288,26 @@ def test_prepare_area_setting_supports_different_selected_room_settings() -> Non
 
 
 @pytest.mark.parametrize(
-    "settings",
+    ("settings", "expected_exception"),
     [
-        RoomCleaningSettings(clean_times=0),
-        RoomCleaningSettings(clean_times=3),
-        RoomCleaningSettings(clean_times=True),
-        RoomCleaningSettings(clean_times="1"),  # type: ignore[arg-type]
-        RoomCleaningSettings(fan_mode="turbo"),
-        RoomCleaningSettings(fan_mode=1),  # type: ignore[arg-type]
-        RoomCleaningSettings(water_pump=0),
-        RoomCleaningSettings(water_pump=4),
-        RoomCleaningSettings(water_pump=True),
-        RoomCleaningSettings(water_pump="1"),  # type: ignore[arg-type]
-        object(),
+        (RoomCleaningSettings(clean_times=0), ValueError),
+        (RoomCleaningSettings(clean_times=3), ValueError),
+        (RoomCleaningSettings(clean_times=True), TypeError),
+        (RoomCleaningSettings(clean_times="1"), TypeError),  # type: ignore[arg-type]
+        (RoomCleaningSettings(fan_mode="turbo"), ValueError),
+        (RoomCleaningSettings(fan_mode=1), TypeError),  # type: ignore[arg-type]
+        (RoomCleaningSettings(water_pump=0), ValueError),
+        (RoomCleaningSettings(water_pump=4), ValueError),
+        (RoomCleaningSettings(water_pump=True), TypeError),
+        (RoomCleaningSettings(water_pump="1"), TypeError),  # type: ignore[arg-type]
+        (object(), TypeError),
     ],
 )
-def test_prepare_area_setting_rejects_invalid_settings(settings: object) -> None:
-    with pytest.raises(ValueError):
+def test_prepare_area_setting_rejects_invalid_settings(
+    settings: object,
+    expected_exception: type[Exception],
+) -> None:
+    with pytest.raises(expected_exception):
         prepare_area_setting(
             parse_room_map(map_info()),
             [1],
@@ -312,17 +316,18 @@ def test_prepare_area_setting_rejects_invalid_settings(settings: object) -> None
 
 
 @pytest.mark.parametrize(
-    "room_settings",
+    ("room_settings", "expected_exception"),
     [
-        {6: RoomCleaningSettings(clean_times=1)},
-        {True: RoomCleaningSettings(clean_times=1)},
-        [(1, RoomCleaningSettings(clean_times=1))],
+        ({6: RoomCleaningSettings(clean_times=1)}, ValueError),
+        ({True: RoomCleaningSettings(clean_times=1)}, TypeError),
+        ([(1, RoomCleaningSettings(clean_times=1))], TypeError),
     ],
 )
 def test_prepare_area_setting_rejects_invalid_settings_mapping(
     room_settings: object,
+    expected_exception: type[Exception],
 ) -> None:
-    with pytest.raises(ValueError):
+    with pytest.raises(expected_exception):
         prepare_area_setting(
             parse_room_map(map_info()),
             [1],
@@ -458,8 +463,9 @@ def test_clean_rooms_sends_per_room_overrides_through_public_api(
         assert area_setting["value"][6]["cleanTimes"] == 7
         assert area_setting["value"][6]["windMode"] == "max"
         assert area_setting["value"][6]["waterPump"] == 3
-        assert area_setting["value"][5] == (
-            parse_room_map(map_info()).area_setting["value"][5]
+        assert (
+            area_setting["value"][5]
+            == (parse_room_map(map_info()).area_setting["value"][5])
         )
 
     run(scenario())
@@ -588,25 +594,26 @@ def test_clean_rooms_preserves_vendor_water_pump_zero(monkeypatch) -> None:
 
 
 @pytest.mark.parametrize(
-    ("room_ids", "room_settings"),
+    ("room_ids", "room_settings", "expected_exception"),
     [
-        ([1], {1: RoomCleaningSettings(clean_times=0)}),
-        ([1], {1: RoomCleaningSettings(clean_times=3)}),
-        ([1], {1: RoomCleaningSettings(clean_times=True)}),
-        ([1], {1: RoomCleaningSettings(fan_mode="turbo")}),
-        ([1], {1: RoomCleaningSettings(water_pump=0)}),
-        ([1], {1: RoomCleaningSettings(water_pump=4)}),
-        ([1], {1: RoomCleaningSettings(water_pump=True)}),
-        ([1], {1: object()}),
-        ([1], {6: RoomCleaningSettings(clean_times=1)}),
-        ([1], {True: RoomCleaningSettings(clean_times=1)}),
-        ([99], {99: RoomCleaningSettings(clean_times=1)}),
+        ([1], {1: RoomCleaningSettings(clean_times=0)}, ValueError),
+        ([1], {1: RoomCleaningSettings(clean_times=3)}, ValueError),
+        ([1], {1: RoomCleaningSettings(clean_times=True)}, TypeError),
+        ([1], {1: RoomCleaningSettings(fan_mode="turbo")}, ValueError),
+        ([1], {1: RoomCleaningSettings(water_pump=0)}, ValueError),
+        ([1], {1: RoomCleaningSettings(water_pump=4)}, ValueError),
+        ([1], {1: RoomCleaningSettings(water_pump=True)}, TypeError),
+        ([1], {1: object()}, TypeError),
+        ([1], {6: RoomCleaningSettings(clean_times=1)}, ValueError),
+        ([1], {True: RoomCleaningSettings(clean_times=1)}, TypeError),
+        ([99], {99: RoomCleaningSettings(clean_times=1)}, ValueError),
     ],
 )
 def test_clean_rooms_validation_prevents_cleaning_post(
     monkeypatch,
     room_ids: list[int],
     room_settings: object,
+    expected_exception: type[Exception],
 ) -> None:
     async def scenario() -> None:
         FakePushClient.events = [map_event()]
@@ -623,7 +630,7 @@ def test_clean_rooms_validation_prevents_cleaning_post(
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         ) as http_client:
-            with pytest.raises(ValueError):
+            with pytest.raises(expected_exception):
                 await authenticated_client(http_client).clean_rooms(
                     DEVICE,
                     room_ids,
@@ -636,10 +643,19 @@ def test_clean_rooms_validation_prevents_cleaning_post(
     run(scenario())
 
 
-@pytest.mark.parametrize("room_ids", [[], [99], [True], ["1"]])
+@pytest.mark.parametrize(
+    ("room_ids", "expected_exception"),
+    [
+        ([], ValueError),
+        ([99], ValueError),
+        ([True], TypeError),
+        (["1"], TypeError),
+    ],
+)
 def test_clean_rooms_rejects_invalid_selection_before_cleaning_post(
     monkeypatch,
     room_ids: list[object],
+    expected_exception: type[Exception],
 ) -> None:
     async def scenario() -> None:
         FakePushClient.events = [map_event()]
@@ -656,7 +672,7 @@ def test_clean_rooms_rejects_invalid_selection_before_cleaning_post(
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         ) as http_client:
-            with pytest.raises(ValueError):
+            with pytest.raises(expected_exception):
                 await authenticated_client(http_client).clean_rooms(
                     DEVICE,
                     room_ids,  # type: ignore[arg-type]

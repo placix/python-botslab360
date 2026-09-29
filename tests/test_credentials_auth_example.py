@@ -38,7 +38,7 @@ class _CaptchaFile:
     def __init__(self, writes: list[bytes]) -> None:
         self._writes = writes
 
-    def __enter__(self) -> "_CaptchaFile":
+    def __enter__(self) -> _CaptchaFile:
         return self
 
     def __exit__(self, *args: object) -> None:
@@ -48,7 +48,9 @@ class _CaptchaFile:
         self._writes.append(value)
 
 
-def _quc_error(region: str, errno: int, errmsg: str = "rejected") -> QucAuthenticationError:
+def _quc_error(
+    region: str, errno: int, errmsg: str = "rejected"
+) -> QucAuthenticationError:
     return QucAuthenticationError(
         "QUC rejected the supplied credentials",
         region=region,
@@ -72,7 +74,7 @@ def _install_probe_factory(
             self.region = region
             self.device_identity = identity
 
-        async def __aenter__(self) -> "Client":
+        async def __aenter__(self) -> Client:
             events.append(("enter", self.region))
             return self
 
@@ -117,7 +119,7 @@ def test_captcha_continues_once_on_same_client(
     class Client:
         device_identity = IDENTITY
 
-        async def __aenter__(self) -> "Client":
+        async def __aenter__(self) -> Client:
             events.append("enter")
             return self
 
@@ -193,7 +195,7 @@ def test_incorrect_captcha_prints_safe_diagnostic_without_retry(
     class Client:
         device_identity = IDENTITY
 
-        async def __aenter__(self) -> "Client":
+        async def __aenter__(self) -> Client:
             return self
 
         async def __aexit__(self, *args: object) -> None:
@@ -348,9 +350,7 @@ def test_probe_stops_immediately_on_success(
     )
 
     assert result == 0
-    assert [event[1] for event in events if event[0] == "authenticate"] == [
-        "eu1"
-    ]
+    assert [event[1] for event in events if event[0] == "authenticate"] == ["eu1"]
 
 
 def test_probe_stops_immediately_on_other_errno(
@@ -377,9 +377,7 @@ def test_probe_stops_immediately_on_other_errno(
     )
 
     assert result == 1
-    assert [event[1] for event in events if event[0] == "authenticate"] == [
-        "eu1"
-    ]
+    assert [event[1] for event in events if event[0] == "authenticate"] == ["eu1"]
     assert "eu1 -> errno 5011 (stopped)" in capsys.readouterr().out
 
 
@@ -413,9 +411,7 @@ def test_probe_stops_immediately_on_network_error(
     )
 
     assert result == 1
-    assert [event[1] for event in events if event[0] == "authenticate"] == [
-        "eu1"
-    ]
+    assert [event[1] for event in events if event[0] == "authenticate"] == ["eu1"]
     assert "network/API error (stopped)" in capsys.readouterr().out
 
 
@@ -469,7 +465,7 @@ def test_probe_captcha_stays_on_selected_region_and_redacts_secrets(
         def __init__(self, region: str) -> None:
             self.region = region
 
-        async def __aenter__(self) -> "Client":
+        async def __aenter__(self) -> Client:
             return self
 
         async def __aexit__(self, *args: object) -> None:
@@ -491,9 +487,7 @@ def test_probe_captcha_stays_on_selected_region_and_redacts_secrets(
             received_challenge: CaptchaChallenge,
             received_code: str,
         ) -> None:
-            events.append(
-                ("continue", self.region, received_challenge, received_code)
-            )
+            events.append(("continue", self.region, received_challenge, received_code))
             raise _quc_error(
                 "na1",
                 1036,

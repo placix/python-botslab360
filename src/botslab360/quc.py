@@ -236,9 +236,7 @@ def compute_signature(
 ) -> str:
     """Compute a QUC signature from raw, decoded parameter values."""
 
-    source = "".join(
-        f"{key}={params[key]}" for key in sorted(params) if key != "sig"
-    )
+    source = "".join(f"{key}={params[key]}" for key in sorted(params) if key != "sig")
     return md5_hex(source + profile.signing_suffix)
 
 
@@ -284,7 +282,7 @@ def des_decrypt_base64(ciphertext: str, key: str) -> str:
 def _rsa_public_key() -> RSAPublicKey:
     key = serialization.load_der_public_key(_RSA_DER)
     if not isinstance(key, RSAPublicKey):
-        raise RuntimeError("QUC public key is not an RSA key")
+        raise TypeError("QUC public key is not an RSA key")
     return key
 
 
@@ -365,9 +363,7 @@ def build_envelope(
 
     plaintext = _serialize_inner_params(params, profile=profile)
     prefix_length = profile.full_random_key_length - profile.des_key_length
-    key_string = _random_ascii(
-        prefix_length, profile.random_charset
-    ) + _random_ascii(
+    key_string = _random_ascii(prefix_length, profile.random_charset) + _random_ascii(
         profile.des_key_length, profile.random_charset
     )
     des_key = key_string[-profile.des_key_length :]
@@ -566,9 +562,7 @@ class QucAuth:
         user_present = "user" in payload and payload["user"] is not None
         details = payload.get("errdetail")
         captcha_type = None
-        if isinstance(details, dict) and isinstance(
-            details.get("captchaType"), str
-        ):
+        if isinstance(details, dict) and isinstance(details.get("captchaType"), str):
             captcha_type = details["captchaType"] or None
         errmsg = _safe_server_message(
             payload.get("errmsg"),
@@ -683,24 +677,15 @@ class QucAuth:
         qid = user.get("qid") if isinstance(user, dict) else None
         q_present = isinstance(q, str) and bool(q)
         t_present = isinstance(t, str) and bool(t)
-        qid_present = (
-            not isinstance(qid, bool) and qid is not None and bool(str(qid))
-        )
-        credentials_obtained = (
-            errno == 0
-            and q_present
-            and t_present
-            and qid_present
-        )
+        qid_present = not isinstance(qid, bool) and qid is not None and bool(str(qid))
+        credentials_obtained = errno == 0 and q_present and t_present and qid_present
         credentials = (
             QihooCredentials(
                 q=normalize_cookie_value(q, name="Q"),
                 t=normalize_cookie_value(t, name="T"),
                 qid=str(qid),
             )
-            if credentials_obtained
-            and isinstance(q, str)
-            and isinstance(t, str)
+            if credentials_obtained and isinstance(q, str) and isinstance(t, str)
             else None
         )
         return _QucLoginDiagnostic(
@@ -789,10 +774,14 @@ class QucAuth:
                 status_code=response.status_code,
                 phase="response-validation",
             )
-        return decoded, response.status_code, (
-            des_key,
-            envelope["parad"],
-            envelope["key"],
+        return (
+            decoded,
+            response.status_code,
+            (
+                des_key,
+                envelope["parad"],
+                envelope["key"],
+            ),
         )
 
     async def _post(self, form: Mapping[str, str]) -> httpx.Response:

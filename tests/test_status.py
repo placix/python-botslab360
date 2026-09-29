@@ -93,9 +93,7 @@ def test_get_status_connects_push_before_sending_http_request(monkeypatch) -> No
                 "application/x-www-form-urlencoded"
             )
             assert request.headers["accept"] == "*/*"
-            assert request.headers["cookie"] == (
-                f"q={Q};t={T};qid={QID};sid={SID}"
-            )
+            assert request.headers["cookie"] == (f"q={Q};t={T};qid={QID};sid={SID}")
 
             form = parse_qs((await request.aread()).decode(), keep_blank_values=True)
             assert set(form) == {
@@ -174,7 +172,9 @@ def test_status_http_api_error_closes_push(monkeypatch) -> None:
                 return login_response()
             return httpx.Response(200, json={"errno": 102})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             with pytest.raises(ApiError) as raised:

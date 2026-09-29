@@ -130,10 +130,7 @@ async def run_login(
                 except CaptchaRequired as error:
                     captcha_required = True
                     if probe_regions:
-                        print(
-                            f"  {candidate_region} -> errno 5010 "
-                            "(captcha required)"
-                        )
+                        print(f"  {candidate_region} -> errno 5010 (captcha required)")
                         print(f"Selected region: {candidate_region}")
                     captcha_path = _save_captcha(error.image)
                     print(f"Captcha image: {captcha_path}")

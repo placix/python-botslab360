@@ -45,7 +45,9 @@ def test_get_devices_sends_expected_request_and_returns_models() -> None:
 
             assert request.url == "https://q.smart.360.cn/common/dev/GetList"
             assert request.method == "POST"
-            assert request.headers["content-type"] == "application/x-www-form-urlencoded"
+            assert (
+                request.headers["content-type"] == "application/x-www-form-urlencoded"
+            )
             assert request.headers["accept"] == "*/*"
             assert request.headers["connection"] == "keep-alive"
             assert request.headers["user-agent"] == (
@@ -95,7 +97,9 @@ def test_get_devices_sends_expected_request_and_returns_models() -> None:
                 },
             )
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             devices = await client.get_devices()
@@ -114,7 +118,9 @@ def test_get_devices_requires_authentication() -> None:
         def handler(request: httpx.Request) -> httpx.Response:
             raise AssertionError("No request expected")
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             with pytest.raises(AuthenticationError) as raised:
                 await client.get_devices()
@@ -151,7 +157,9 @@ def test_get_devices_refreshes_expired_sid_once() -> None:
                 return httpx.Response(200, json={"errno": 102})
             return httpx.Response(200, json={"errno": 0, "data": {"list": []}})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             assert await client.get_devices() == []
@@ -179,7 +187,9 @@ def test_get_devices_maps_api_errors(
                 return login_response()
             return httpx.Response(200, json={"errno": errno})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             with pytest.raises(exception_type) as raised:
@@ -201,7 +211,9 @@ def test_get_devices_validates_response(data: object) -> None:
                 return login_response()
             return httpx.Response(200, json={"errno": 0, "data": data})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             with pytest.raises(ApiError) as raised:
@@ -218,7 +230,9 @@ def test_get_devices_treats_missing_list_as_empty() -> None:
                 return login_response()
             return httpx.Response(200, json={"errno": 0, "data": {}})
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             assert await client.get_devices() == []
@@ -235,7 +249,9 @@ def test_get_devices_maps_http_error_without_response_body() -> None:
                 return login_response()
             return httpx.Response(503, text=secret_body)
 
-        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http_client:
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
             client = Botslab360Client(Q, T, http_client=http_client)
             await client.authenticate()
             with pytest.raises(ApiError) as raised:

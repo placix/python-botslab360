@@ -22,14 +22,14 @@ from botslab360 import (
     QucAuthenticationError,
 )
 from botslab360.quc import (
+    _ANDROID_INNER_PARAMETER_ORDER,
+    _ANDROID_RANDOM_CHARSET,
     ANDROID_360_PROFILE,
     BOTSLAB_CLOUD_PROFILE,
     OUTER_FORM_FIELDS,
     QUC_FROM,
     QUC_USER_AGENT,
     QucAuth,
-    _ANDROID_INNER_PARAMETER_ORDER,
-    _ANDROID_RANDOM_CHARSET,
     _encode_base64,
     _java_urlencode_component,
     _rsa_public_key,
@@ -288,9 +288,7 @@ def test_build_envelope_uses_last_eight_bytes_as_des_key(
 def test_cloud_profile_preserves_existing_transport_values() -> None:
     profile = BOTSLAB_CLOUD_PROFILE
 
-    assert profile.endpoint("eu1") == (
-        "https://eu1-sapp-login.botslab.com/request.php"
-    )
+    assert profile.endpoint("eu1") == ("https://eu1-sapp-login.botslab.com/request.php")
     assert profile.from_value == QUC_FROM == "mpl_cloudsmartoem_and"
     assert profile.user_agent == QUC_USER_AGENT
     assert profile.login_type == "801"
@@ -409,12 +407,8 @@ def test_profile_key_lengths_and_des_key_selection(
 
     monkeypatch.setattr("botslab360.quc._random_ascii", random_ascii)
 
-    cloud_envelope, cloud_key = build_envelope(
-        {}, profile=BOTSLAB_CLOUD_PROFILE
-    )
-    android_envelope, android_key = build_envelope(
-        {}, profile=ANDROID_360_PROFILE
-    )
+    cloud_envelope, cloud_key = build_envelope({}, profile=BOTSLAB_CLOUD_PROFILE)
+    android_envelope, android_key = build_envelope({}, profile=ANDROID_360_PROFILE)
 
     assert requested == [
         (106, BOTSLAB_CLOUD_PROFILE.random_charset),
@@ -655,9 +649,7 @@ def test_quc_login_error_redacts_request_and_crypto_secrets(
 
         def handler(request: httpx.Request) -> httpx.Response:
             outer = parse_qs(request.content.decode())
-            captured_secrets.extend(
-                [outer["parad"][0], outer["key"][0], "AAAAAAAA"]
-            )
+            captured_secrets.extend([outer["parad"][0], outer["key"][0], "AAAAAAAA"])
             unsafe_message = " | ".join(
                 [
                     "secret-email@example.invalid",
@@ -884,9 +876,7 @@ def test_public_robot360_captcha_flow_mints_and_stores_smart_session(
                 )
             assert step == 4
             assert request.url == "https://q.smart.360.cn/common/user/login"
-            assert request.headers["cookie"] == (
-                f"q={Q_VALUE};t={T_VALUE};qid={QID}"
-            )
+            assert request.headers["cookie"] == (f"q={Q_VALUE};t={T_VALUE};qid={QID}")
             return httpx.Response(
                 200,
                 json={
@@ -957,9 +947,7 @@ def test_robot360_authentication_never_falls_back_to_botslab(
         def handler(request: httpx.Request) -> httpx.Response:
             requests.append(request)
             assert request.url.host == "passport.360.cn"
-            return _encrypted_response(
-                {"errno": 1036, "errmsg": "account not found"}
-            )
+            return _encrypted_response({"errno": 1036, "errmsg": "account not found"})
 
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)

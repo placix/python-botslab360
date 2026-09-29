@@ -6,7 +6,7 @@ This project provides an unofficial Python interface for selected 360 robot vacu
 
 > [!WARNING]
 > This project is unofficial and not affiliated with Botslab, Qihoo 360 or 360 Smart Home.
-> Version `0.4.0` should be considered experimental.
+> Version `0.4.1` should be considered experimental.
 
 ## Features
 

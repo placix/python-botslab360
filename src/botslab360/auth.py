@@ -57,12 +57,10 @@ def normalize_cookie_value(value: str, *, name: str) -> str:
 
     normalized = value.strip()
     prefix = f"{name}="
-    if normalized.startswith(prefix):
-        normalized = normalized[len(prefix) :]
+    normalized = normalized.removeprefix(prefix)
 
     normalized = unquote(normalized)
-    if normalized.startswith(prefix):
-        normalized = normalized[len(prefix) :]
+    normalized = normalized.removeprefix(prefix)
     if not normalized:
         raise AuthenticationError(f"{name} must not be empty", phase="input")
     return normalized
@@ -199,9 +197,7 @@ class BotslabAuth:
             http_status=exchange.http_status,
             errno=exchange.errno,
             errmsg=exchange.errmsg,
-            sid_present=(
-                exchange.session is not None and bool(exchange.session.sid)
-            ),
+            sid_present=(exchange.session is not None and bool(exchange.session.sid)),
             push_key_present=(
                 exchange.session is not None and bool(exchange.session.push_key)
             ),
@@ -222,8 +218,7 @@ class BotslabAuth:
                 "brand": "iPhone",
                 "model": "iPhone10,5",
                 "notifyId": (
-                    "aa0ad645269de676a5ee6a728ba13b777"
-                    "ed3d4aa4d0e08a578097fbe78768b02"
+                    "aa0ad645269de676a5ee6a728ba13b777ed3d4aa4d0e08a578097fbe78768b02"
                 ),
                 "lang": self._language,
                 "imei": "f3bc82b802bd91a51d0dcc6499efeba3",

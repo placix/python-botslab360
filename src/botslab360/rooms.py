@@ -79,24 +79,26 @@ def validate_room_cleaning_settings(settings: object) -> RoomCleaningSettings:
     """Validate one public room-settings value without network access."""
 
     if not isinstance(settings, RoomCleaningSettings):
-        raise ValueError("room settings must be RoomCleaningSettings instances")
-    if settings.clean_times is not None and (
-        isinstance(settings.clean_times, bool)
-        or not isinstance(settings.clean_times, int)
-        or settings.clean_times not in ROOM_CLEAN_TIMES
-    ):
-        raise ValueError("clean_times must be 1 or 2")
-    if settings.fan_mode is not None and (
-        not isinstance(settings.fan_mode, str)
-        or settings.fan_mode not in _ROOM_FAN_MODE_VALUES
-    ):
-        raise ValueError("fan_mode must be quiet, auto, strong, or max")
-    if settings.water_pump is not None and (
-        isinstance(settings.water_pump, bool)
-        or not isinstance(settings.water_pump, int)
-        or settings.water_pump not in _ROOM_WATER_LEVEL_VALUES
-    ):
-        raise ValueError("water_pump must be 1, 2, or 3")
+        raise TypeError("room settings must be RoomCleaningSettings instances")
+    if settings.clean_times is not None:
+        if isinstance(settings.clean_times, bool) or not isinstance(
+            settings.clean_times, int
+        ):
+            raise TypeError("clean_times must be an integer")
+        if settings.clean_times not in ROOM_CLEAN_TIMES:
+            raise ValueError("clean_times must be 1 or 2")
+    if settings.fan_mode is not None:
+        if not isinstance(settings.fan_mode, str):
+            raise TypeError("fan_mode must be a string")
+        if settings.fan_mode not in _ROOM_FAN_MODE_VALUES:
+            raise ValueError("fan_mode must be quiet, auto, strong, or max")
+    if settings.water_pump is not None:
+        if isinstance(settings.water_pump, bool) or not isinstance(
+            settings.water_pump, int
+        ):
+            raise TypeError("water_pump must be an integer")
+        if settings.water_pump not in _ROOM_WATER_LEVEL_VALUES:
+            raise ValueError("water_pump must be 1, 2, or 3")
     return settings
 
 
@@ -109,12 +111,12 @@ def normalize_room_settings(
     if room_settings is None:
         return {}
     if not isinstance(room_settings, Mapping):
-        raise ValueError("room_settings must be a mapping")
+        raise TypeError("room_settings must be a mapping")
     selected_ids = set(room_ids)
     normalized: dict[int, RoomCleaningSettings] = {}
     for room_id, settings in room_settings.items():
         if isinstance(room_id, bool) or not isinstance(room_id, int):
-            raise ValueError("room_settings keys must be integer room IDs")
+            raise TypeError("room_settings keys must be integer room IDs")
         if room_id not in selected_ids:
             raise ValueError(
                 f"Room settings supplied for unselected room ID: {room_id}"
@@ -215,11 +217,7 @@ def gson_sweep_area_list(value: object) -> dict[str, Any] | None:
     areas = value.get("value")
     if areas is not None:
         result["value"] = (
-            [
-                area
-                for item in areas
-                if (area := gson_sweep_area(item)) is not None
-            ]
+            [area for item in areas if (area := gson_sweep_area(item)) is not None]
             if isinstance(areas, list)
             else []
         )

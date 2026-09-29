@@ -20,9 +20,7 @@ CAPTCHA_CONFIRMATION = "CONTINUE ONE PUBLIC ROBOT360 CAPTCHA"
 CLEAN_CONFIRMATION = "CLEAN ROOM 1"
 ROOM_ID = 1
 EXPECTED_ROOM_NAME = "Bad"
-IDENTITY_PATH = (
-    Path(__file__).resolve().parents[1] / ".botslab360-device-identity.json"
-)
+IDENTITY_PATH = Path(__file__).resolve().parents[1] / ".botslab360-device-identity.json"
 
 
 def _identity_payload(identity: DeviceIdentity) -> dict[str, str]:
@@ -98,15 +96,11 @@ async def run_room_api_test(
                 await client.authenticate()
             except CaptchaRequired as error:
                 challenge = error.challenge
-                output_path = captcha_path or _default_captcha_path(
-                    challenge.image
-                )
+                output_path = captcha_path or _default_captcha_path(challenge.image)
                 output_path.write_bytes(challenge.image)
                 print(f"Captcha image: {output_path}")
 
-                confirmation = input(
-                    f"Type {CAPTCHA_CONFIRMATION} to continue: "
-                )
+                confirmation = input(f"Type {CAPTCHA_CONFIRMATION} to continue: ")
                 if confirmation != CAPTCHA_CONFIRMATION:
                     print("Captcha continuation not requested.")
                     print("PUBLIC ROOM API LIVE STATUS: NOT RUN")
@@ -140,13 +134,9 @@ async def run_room_api_test(
                 None,
             )
             room_is_expected = (
-                selected_room is not None
-                and selected_room.name == EXPECTED_ROOM_NAME
+                selected_room is not None and selected_room.name == EXPECTED_ROOM_NAME
             )
-            print(
-                f'Room 1 is "Bad": '
-                f"{'yes' if room_is_expected else 'no'}"
-            )
+            print(f'Room 1 is "Bad": {"yes" if room_is_expected else "no"}')
             if not room_is_expected:
                 print("Public clean_rooms([1]): not sent")
                 print("PUBLIC ROOM API LIVE STATUS: FAIL")
@@ -166,18 +156,12 @@ async def run_room_api_test(
             session_refreshed |= client.session is not session_before_cleaning
             print("Public clean_rooms([1]): success")
             print("Physical robot behavior: confirm manually")
-            print(
-                "Session refresh occurred: "
-                f"{'yes' if session_refreshed else 'no'}"
-            )
+            print(f"Session refresh occurred: {'yes' if session_refreshed else 'no'}")
             print("PUBLIC ROOM API LIVE STATUS: PASS")
             return 0
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - keep diagnostics traceback-free
         _safe_error(error)
-        print(
-            "Session refresh occurred: "
-            f"{'yes' if session_refreshed else 'no'}"
-        )
+        print(f"Session refresh occurred: {'yes' if session_refreshed else 'no'}")
         print("PUBLIC ROOM API LIVE STATUS: FAIL")
         return 1
 

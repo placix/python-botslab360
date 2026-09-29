@@ -30,9 +30,9 @@ from .models import (
     Device,
     DeviceIdentity,
     QihooCredentials,
+    RobotStatus,
     Room,
     RoomCleaningSettings,
-    RobotStatus,
     SmartSession,
 )
 from .protocol import (
@@ -41,9 +41,9 @@ from .protocol import (
     ANDROID_360_PUSH_HEARTBEAT_TIMEOUT,
     ANDROID_360_PUSH_PORT,
     DEFAULT_PUSH_CLIENT_VERSION,
-    DEFAULT_PUSH_HOST,
     DEFAULT_PUSH_HEARTBEAT_INTERVAL,
     DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
+    DEFAULT_PUSH_HOST,
     DEFAULT_PUSH_PORT,
     STATUS_INFO_TYPE,
     PushClient,
@@ -232,17 +232,15 @@ class Botslab360Client:
         timeout: float = 30.0,
         push_host: str = DEFAULT_PUSH_HOST,
         push_port: int | None = None,
-    ) -> "Botslab360Client":
+    ) -> Botslab360Client:
         """Create a client that obtains Q/T through a headless QUC login."""
 
         if not isinstance(backend, AuthBackend):
-            raise ValueError("backend must be an AuthBackend value")
+            raise TypeError("backend must be an AuthBackend value")
         if backend is AuthBackend.BOTSLAB:
             profile = BOTSLAB_CLOUD_PROFILE
             resolved_region = region or "eu1"
-            resolved_push_port = (
-                DEFAULT_PUSH_PORT if push_port is None else push_port
-            )
+            resolved_push_port = DEFAULT_PUSH_PORT if push_port is None else push_port
             push_client_version = DEFAULT_PUSH_CLIENT_VERSION
             push_heartbeat_timeout = DEFAULT_PUSH_HEARTBEAT_TIMEOUT
             push_heartbeat_interval = DEFAULT_PUSH_HEARTBEAT_INTERVAL
@@ -293,12 +291,18 @@ class Botslab360Client:
     def _set_credentials(self, credentials: QihooCredentials) -> None:
         self._credentials: QihooCredentials | None = credentials
         self._account_fingerprint: str | None = hashlib.sha256(
-            f"botslab360:{credentials.qid}".encode("utf-8")
+            f"botslab360:{credentials.qid}".encode()
         ).hexdigest()
 
     @property
     def session(self) -> SmartSession | None:
         return self._session
+
+    @property
+    def credentials(self) -> QihooCredentials | None:
+        """Return reusable Q/T credentials after authentication."""
+
+        return self._credentials
 
     @property
     def account_fingerprint(self) -> str:
@@ -421,7 +425,9 @@ class Botslab360Client:
                 phase="http",
             ) from exc
         except httpx.RequestError as exc:
-            raise ApiError("Device discovery request failed", phase="transport") from exc
+            raise ApiError(
+                "Device discovery request failed", phase="transport"
+            ) from exc
 
         try:
             payload = response.json()
@@ -566,14 +572,14 @@ class Botslab360Client:
 
         device_id = _device_id(device)
         if not isinstance(room_ids, list):
-            raise ValueError("room_ids must be a list of integers")
+            raise TypeError("room_ids must be a list of integers")
         if not room_ids:
             raise ValueError("room_ids must not be empty")
         if any(
             isinstance(room_id, bool) or not isinstance(room_id, int)
             for room_id in room_ids
         ):
-            raise ValueError("room_ids must contain integers")
+            raise TypeError("room_ids must contain integers")
         normalized_ids = list(dict.fromkeys(room_ids))
         normalized_settings = normalize_room_settings(
             normalized_ids,
@@ -905,7 +911,7 @@ class Botslab360Client:
         if self._owns_http_client:
             await self._http_client.aclose()
 
-    async def __aenter__(self) -> "Botslab360Client":
+    async def __aenter__(self) -> Botslab360Client:
         return self
 
     async def __aexit__(self, *args: object) -> None:

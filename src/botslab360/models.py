@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from enum import Enum, IntEnum
 from uuid import UUID, uuid4
 
-
 _HEX_32 = re.compile(r"[0-9a-f]{32}")
 _HEX_16 = re.compile(r"[0-9a-f]{16}")
 
@@ -42,7 +41,7 @@ class DeviceIdentity:
             raise ValueError("m2 must be a canonical UUID")
 
     @classmethod
-    def generate(cls) -> "DeviceIdentity":
+    def generate(cls) -> DeviceIdentity:
         """Generate an identity that callers should persist and reuse."""
 
         return cls(

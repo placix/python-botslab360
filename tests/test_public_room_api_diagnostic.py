@@ -76,7 +76,7 @@ def test_public_room_flow_uses_only_public_operations(
             self.session = session
 
         @classmethod
-        def from_credentials(cls, **kwargs: object) -> "FakeClient":
+        def from_credentials(cls, **kwargs: object) -> FakeClient:
             calls.append(("factory", kwargs))
             return cls()
 
@@ -155,7 +155,7 @@ def test_cleaning_requires_exact_confirmation(
         session = SimpleNamespace()
 
         @classmethod
-        def from_credentials(cls, **kwargs: object) -> "FakeClient":
+        def from_credentials(cls, **kwargs: object) -> FakeClient:
             return cls()
 
         async def __aenter__(self):
@@ -201,7 +201,7 @@ def test_public_captcha_continuation_does_not_expose_secrets(
             self.session = session
 
         @classmethod
-        def from_credentials(cls, **kwargs: object) -> "FakeClient":
+        def from_credentials(cls, **kwargs: object) -> FakeClient:
             return cls()
 
         async def __aenter__(self):

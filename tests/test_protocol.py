@@ -12,8 +12,8 @@ import botslab360.protocol as protocol_module
 from botslab360 import ApiError
 from botslab360.protocol import (
     PushClient,
-    _PushTransportFrameBuffer,
     _parse_push_application_frame,
+    _PushTransportFrameBuffer,
     decode_push_envelope,
     decrypt_push_data,
     parse_status_event,
@@ -31,11 +31,7 @@ CIPHERTEXT = (
 
 
 def bind_ack(properties: bytes = b"result:ok") -> bytes:
-    return (
-        b"\x00\x05\x00\x06"
-        + len(properties).to_bytes(2, "big")
-        + properties
-    )
+    return b"\x00\x05\x00\x06" + len(properties).to_bytes(2, "big") + properties
 
 
 def application_packet(
@@ -68,9 +64,7 @@ def application_packet_with_messages(
         + message
     )
     acknowledgement = (
-        b"\x00\x05\x00\x04"
-        + len(properties).to_bytes(2, "big")
-        + properties
+        b"\x00\x05\x00\x04" + len(properties).to_bytes(2, "big") + properties
     )
     return packet, acknowledgement
 
@@ -85,9 +79,7 @@ def raw_application_packet(payload: bytes) -> tuple[bytes, bytes]:
         + payload
     )
     acknowledgement = (
-        b"\x00\x05\x00\x04"
-        + len(properties).to_bytes(2, "big")
-        + properties
+        b"\x00\x05\x00\x04" + len(properties).to_bytes(2, "big") + properties
     )
     return packet, acknowledgement
 
@@ -187,9 +179,7 @@ def test_transport_buffer_retains_fragmented_bind_and_application_frames() -> No
     packet, _ = application_packet({"data": CIPHERTEXT})
 
     assert buffer.feed(acknowledgement[:3]) == []
-    assert buffer.feed(acknowledgement[3:] + packet[:11]) == [
-        (6, acknowledgement)
-    ]
+    assert buffer.feed(acknowledgement[3:] + packet[:11]) == [(6, acknowledgement)]
     assert buffer.feed(packet[11:]) == [(3, packet)]
 
 
@@ -337,16 +327,9 @@ def test_push_client_registers_decodes_status_and_acknowledges(monkeypatch) -> N
         assert counters["decryptFailure"] == 0
         assert counters["jsonParseSuccess"] == 1
         assert counters["jsonParseFailure"] == 0
-        properties = (
-            b"cv:1.7\n"
-            b"t:30\n"
-            b"u:synthetic-sid@60009\n"
-            b"ts:1700000000000"
-        )
+        properties = b"cv:1.7\nt:30\nu:synthetic-sid@60009\nts:1700000000000"
         assert writer.writes[0] == (
-            b"\x00\x05\x00\x02"
-            + len(properties).to_bytes(2, "big")
-            + properties
+            b"\x00\x05\x00\x02" + len(properties).to_bytes(2, "big") + properties
         )
         assert events.index("reader-active") < events.index("bind-written")
         assert writer.writes[1] == acknowledgement
@@ -409,16 +392,9 @@ def test_android_profile_bind_matches_pcap_structure(monkeypatch) -> None:
         await push.connect()
         await push.close()
 
-        properties = (
-            b"cv:1.21\n"
-            b"t:20\n"
-            b"u:synthetic-sid@60009\n"
-            b"ts:1700000000000"
-        )
+        properties = b"cv:1.21\nt:20\nu:synthetic-sid@60009\nts:1700000000000"
         assert writer.writes[0] == (
-            b"\x00\x05\x00\x02"
-            + len(properties).to_bytes(2, "big")
-            + properties
+            b"\x00\x05\x00\x02" + len(properties).to_bytes(2, "big") + properties
         )
 
     run(scenario())
@@ -641,12 +617,7 @@ def test_opcode3_classification_accounts_for_every_transport_frame(
                 await handshake_written.wait()
                 if not self.sent:
                     self.sent = True
-                    return (
-                        bind_ack()
-                        + empty_packet
-                        + malformed_packet
-                        + valid_packet
-                    )
+                    return bind_ack() + empty_packet + malformed_packet + valid_packet
                 await asyncio.Event().wait()
 
         class FakeWriter:
@@ -691,8 +662,7 @@ def test_opcode3_classification_accounts_for_every_transport_frame(
         assert counters["opcode3FramesEmptyPayload"] == 1
         assert counters["opcode3FramesMalformed"] == 1
         assert [
-            item["classification"]
-            for item in counters["opcode3FrameClassifications"]
+            item["classification"] for item in counters["opcode3FrameClassifications"]
         ] == ["empty_payload", "malformed", "queued"]
         assert counters["opcode3FrameClassifications"][1]["reason"] == (
             "truncated_message_header"
@@ -748,11 +718,7 @@ def test_connect_waits_for_bind_ack_and_preserves_application_message(
                 await handshake_written.wait()
                 await release_ack.wait()
                 release_ack.clear()
-                return (
-                    packet + bind_ack()
-                    if application_first
-                    else bind_ack() + packet
-                )
+                return packet + bind_ack() if application_first else bind_ack() + packet
 
         class FakeWriter:
             def __init__(self):

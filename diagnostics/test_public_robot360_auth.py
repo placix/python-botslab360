@@ -17,9 +17,7 @@ from botslab360 import (
 )
 
 CONFIRMATION = "CONTINUE ONE PUBLIC ROBOT360 CAPTCHA"
-IDENTITY_PATH = (
-    Path(__file__).resolve().parents[1] / ".botslab360-device-identity.json"
-)
+IDENTITY_PATH = Path(__file__).resolve().parents[1] / ".botslab360-device-identity.json"
 
 
 def _identity_payload(identity: DeviceIdentity) -> dict[str, str]:
@@ -112,7 +110,7 @@ async def run_auth_test(
 
         _print_success(session)
         return 0
-    except Exception as error:
+    except Exception as error:  # noqa: BLE001 - keep diagnostics traceback-free
         print(f"Authentication failed: {type(error).__name__}")
         return 1
     finally:

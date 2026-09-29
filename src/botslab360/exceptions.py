@@ -72,7 +72,7 @@ class CaptchaRequired(QucAuthenticationError):
 
     def __init__(
         self,
-        challenge: "CaptchaChallenge",
+        challenge: CaptchaChallenge,
         *,
         errno: int = 5010,
         status_code: int | None = None,

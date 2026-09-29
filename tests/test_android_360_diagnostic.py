@@ -66,12 +66,20 @@ def test_default_dry_run_performs_no_network(
             pytest.fail("dry-run must not allocate an HTTP client")
 
     monkeypatch.setattr(module.httpx, "AsyncClient", UnexpectedClient)
-    monkeypatch.setattr(module, "_parse_args", lambda: type("Args", (), {
-        "send_once": False,
-        "continue_captcha": False,
-        "mint_session_once": False,
-        "identity": module.DEFAULT_IDENTITY_PATH,
-    })())
+    monkeypatch.setattr(
+        module,
+        "_parse_args",
+        lambda: type(
+            "Args",
+            (),
+            {
+                "send_once": False,
+                "continue_captcha": False,
+                "mint_session_once": False,
+                "identity": module.DEFAULT_IDENTITY_PATH,
+            },
+        )(),
+    )
 
     assert module.main() == 0
     output = capsys.readouterr().out
@@ -108,6 +116,7 @@ def test_send_once_non_captcha_error_does_not_retry(
         "botslab360.quc._random_ascii",
         lambda length, charset: "A" * length,
     )
+
     async def scenario() -> int:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
@@ -123,12 +132,16 @@ def test_send_once_non_captcha_error_does_not_retry(
     assert len(requests) == 1
     request = requests[0]
     assert str(request.url) == "https://passport.360.cn/request.php"
-    assert request.headers["user-agent"] == (
-        "360accounts andv3.2.4 mpl_smarthome_and"
-    )
+    assert request.headers["user-agent"] == ("360accounts andv3.2.4 mpl_smarthome_and")
     outer = parse_qs(request.content.decode())
     assert set(outer) == {
-        "device_lang", "from", "key", "method", "parad", "quc_lang", "trace_id"
+        "device_lang",
+        "from",
+        "key",
+        "method",
+        "parad",
+        "quc_lang",
+        "trace_id",
     }
     assert outer["from"] == ["mpl_smarthome_and"]
     assert len(outer["key"][0]) == 171
@@ -251,9 +264,7 @@ def test_continue_captcha_sends_exactly_one_retry(
                 }
             )
         if len(requests) == 2:
-            assert _request_params(request)["method"] == [
-                "UserIntf.getCaptcha"
-            ]
+            assert _request_params(request)["method"] == ["UserIntf.getCaptcha"]
             return httpx.Response(
                 200,
                 content=b"image",
@@ -534,15 +545,14 @@ def test_send_once_redacts_credentials_and_crypto_secrets(
     def handler(request: httpx.Request) -> httpx.Response:
         outer = parse_qs(request.content.decode())
         captured.extend([outer["key"][0], outer["parad"][0], "AAAAAAAA"])
-        message = " | ".join(
-            [account, password, md5_hex(password), *captured]
-        )
+        message = " | ".join([account, password, md5_hex(password), *captured])
         return _response({"errno": 1036, "errmsg": message})
 
     monkeypatch.setattr(
         "botslab360.quc._random_ascii",
         lambda length, charset: "A" * length,
     )
+
     async def scenario() -> int:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
@@ -651,9 +661,7 @@ def test_send_requires_exact_confirmation(
             identity=tmp_path / "identity.json",
         ),
     )
-    monkeypatch.setattr(
-        module, "input", lambda prompt: next(answers), raising=False
-    )
+    monkeypatch.setattr(module, "input", lambda prompt: next(answers), raising=False)
     monkeypatch.setattr(module, "getpass", lambda prompt: "synthetic-password")
     monkeypatch.setattr(module, "send_once", fake_send_once)
 
@@ -687,9 +695,7 @@ def test_continue_captcha_requires_exact_confirmation(
             identity=tmp_path / "identity.json",
         ),
     )
-    monkeypatch.setattr(
-        module, "input", lambda prompt: next(answers), raising=False
-    )
+    monkeypatch.setattr(module, "input", lambda prompt: next(answers), raising=False)
     monkeypatch.setattr(module, "getpass", lambda prompt: "synthetic-password")
     monkeypatch.setattr(module, "send_once", fake_send_once)
 

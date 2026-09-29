@@ -40,12 +40,17 @@ from botslab360.protocol import (
     DEFAULT_PUSH_HEARTBEAT_INTERVAL,
     DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
     PushClient,
-    decode_push_envelope,
 )
 from botslab360.rooms import (
     decode_room_name as _production_decode_room_name,
+)
+from botslab360.rooms import (
     gson_json as _production_gson_json,
+)
+from botslab360.rooms import (
     gson_sweep_area as _production_gson_sweep_area,
+)
+from botslab360.rooms import (
     gson_sweep_area_list as _production_gson_sweep_area_list,
 )
 
@@ -277,16 +282,12 @@ def _support_capability_values(value: object) -> dict[str, Any]:
                 continue
             capability = _SUPPORT_CAPABILITY_NAMES.get(_normalized_key(key))
             if capability is not None:
-                scalar = (
-                    nested if isinstance(nested, (bool, int, float, str)) else None
-                )
+                scalar = nested if isinstance(nested, (bool, int, float, str)) else None
                 matches[capability].append(scalar)
             inspect(nested)
 
     inspect(value)
-    return {
-        name: values[0] if values else None for name, values in matches.items()
-    }
+    return {name: values[0] if values else None for name, values in matches.items()}
 
 
 def _inspect_support_container(
@@ -335,9 +336,7 @@ def _support_diagnostic(payload: object) -> dict[str, Any]:
             "supportKeys": [],
             "supportCandidateKeys": [],
             "supportBlockCleanPaths": [],
-            "supportCapabilities": {
-                name: None for name in SUPPORT_CAPABILITIES
-            },
+            "supportCapabilities": {name: None for name in SUPPORT_CAPABILITIES},
         }
 
     missing = object()
@@ -457,7 +456,9 @@ async def _download_protocol(
     try:
         payload = response.json()
     except ValueError as error:
-        raise ApiError("Map push download returned invalid JSON", phase="json") from error
+        raise ApiError(
+            "Map push download returned invalid JSON", phase="json"
+        ) from error
     if not isinstance(payload, dict):
         raise ApiError("Map push download returned invalid data", phase="protocol")
     return payload
@@ -625,12 +626,10 @@ def _print_map_trigger_result(result: dict[str, int | bool | None]) -> None:
 def _print_push_readiness(push: PushClient) -> None:
     print(f"tcp connected: {str(getattr(push, '_tcp_connected', False)).lower()}")
     print(
-        "push reader started: "
-        f"{str(getattr(push, '_reader_started', False)).lower()}"
+        f"push reader started: {str(getattr(push, '_reader_started', False)).lower()}"
     )
     print(
-        "push handshake sent: "
-        f"{str(getattr(push, '_handshake_sent', False)).lower()}"
+        f"push handshake sent: {str(getattr(push, '_handshake_sent', False)).lower()}"
     )
     print(
         "push handshake response received: "
@@ -669,39 +668,18 @@ def _print_push_transport_diagnostics(push: PushClient) -> None:
     )
     opcode_counts = counters["opcodeCounts"]
     print(f"tcp bytes received: {counters['tcpBytesReceived']}")
-    print(
-        "transport frames received: "
-        f"{counters['transportFramesReceived']}"
-    )
+    print(f"transport frames received: {counters['transportFramesReceived']}")
     print(f"opcode 6 frames: {opcode_counts.get(6, 0)}")
     print(f"opcode 3 frames: {opcode_counts.get(3, 0)}")
     print(f"opcode 3 acknowledged: {counters['opcode3Acknowledged']}")
-    print(
-        "opcode 3 structurally valid: "
-        f"{counters['opcode3StructurallyValid']}"
-    )
-    print(
-        "opcode 3 structurally invalid: "
-        f"{counters['opcode3StructurallyInvalid']}"
-    )
+    print(f"opcode 3 structurally valid: {counters['opcode3StructurallyValid']}")
+    print(f"opcode 3 structurally invalid: {counters['opcode3StructurallyInvalid']}")
     print(f"opcode 3 queued frames: {counters['opcode3FramesQueued']}")
-    print(
-        "opcode 3 empty payload frames: "
-        f"{counters['opcode3FramesEmptyPayload']}"
-    )
+    print(f"opcode 3 empty payload frames: {counters['opcode3FramesEmptyPayload']}")
     print(f"opcode 3 malformed frames: {counters['opcode3FramesMalformed']}")
-    print(
-        "application frames queued: "
-        f"{counters['applicationFramesQueued']}"
-    )
-    print(
-        "application frames dispatched: "
-        f"{counters['applicationFramesDispatched']}"
-    )
-    print(
-        "application envelopes parsed: "
-        f"{counters['applicationEnvelopesParsed']}"
-    )
+    print(f"application frames queued: {counters['applicationFramesQueued']}")
+    print(f"application frames dispatched: {counters['applicationFramesDispatched']}")
+    print(f"application envelopes parsed: {counters['applicationEnvelopesParsed']}")
     print(
         "application envelope parse success: "
         f"{counters['applicationEnvelopeParseSuccess']}"
@@ -710,10 +688,7 @@ def _print_push_transport_diagnostics(push: PushClient) -> None:
         "application envelope parse failure: "
         f"{counters['applicationEnvelopeParseFailure']}"
     )
-    print(
-        "application product mismatch: "
-        f"{counters['applicationProductMismatch']}"
-    )
+    print(f"application product mismatch: {counters['applicationProductMismatch']}")
     print(f"decrypt success: {counters['decryptSuccess']}")
     print(f"decrypt failure: {counters['decryptFailure']}")
     print(f"json parse success: {counters['jsonParseSuccess']}")
@@ -826,9 +801,7 @@ async def _capture_map(
                     if done:
                         _print_push_transport_diagnostics(push)
                         result = waiter.result()
-                        print(
-                            f"received infoTypes: {_received_info_types(captures)}"
-                        )
+                        print(f"received infoTypes: {_received_info_types(captures)}")
                         print("20002 received: true")
                         print("retrying map discovery: false")
                         return result
@@ -837,8 +810,7 @@ async def _capture_map(
                     print(f"received infoTypes: {_received_info_types(captures)}")
                     print("20002 received: false")
                     print(
-                        "retrying map discovery: "
-                        f"{'true' if attempt == 1 else 'false'}"
+                        f"retrying map discovery: {'true' if attempt == 1 else 'false'}"
                     )
 
                 raise ApiError(
@@ -888,11 +860,7 @@ def _captured_sweep_area_list(value: object) -> dict[str, Any] | None:
     if "value" in value:
         areas = value["value"]
         result["value"] = (
-            [
-                area
-                for item in areas
-                if (area := _captured_sweep_area(item)) is not None
-            ]
+            [area for item in areas if (area := _captured_sweep_area(item)) is not None]
             if isinstance(areas, list)
             else copy.deepcopy(areas)
         )
@@ -952,8 +920,7 @@ def _sanitize_map(map_info: dict[str, Any]) -> dict[str, Any]:
         "smartArea": captured_smart_area,
         "areaSettingTemplate": area_setting_template,
         "smartAreaActiveIdsPresent": (
-            isinstance(captured_smart_area, dict)
-            and "activeIds" in captured_smart_area
+            isinstance(captured_smart_area, dict) and "activeIds" in captured_smart_area
         ),
         "smartAreaActiveIds": (
             copy.deepcopy(captured_smart_area.get("activeIds"))
@@ -971,18 +938,18 @@ def _prepare_room_request(
     smart_area: object,
     room_id: int,
 ) -> dict[str, Any]:
-    if not isinstance(clean_id, str) or not clean_id:
-        raise ValueError("MapInfo.cleanId is missing or is not a non-empty string")
+    if not isinstance(clean_id, str):
+        raise TypeError("MapInfo.cleanId is missing or is not a string")
+    if not clean_id:
+        raise ValueError("MapInfo.cleanId must not be empty")
     if isinstance(map_id, bool) or not isinstance(map_id, int):
-        raise ValueError("MapInfo.mapId is missing or is not an integer")
+        raise TypeError("MapInfo.mapId is missing or is not an integer")
     if not isinstance(smart_area, dict):
-        raise ValueError("MapInfo.smartArea is missing or invalid")
+        raise TypeError("MapInfo.smartArea is missing or invalid")
     values = smart_area.get("value")
     if not isinstance(values, list):
-        raise ValueError("MapInfo.smartArea.value is missing or invalid")
-    available_ids = {
-        area.get("id") for area in values if isinstance(area, dict)
-    }
+        raise TypeError("MapInfo.smartArea.value is missing or invalid")
+    available_ids = {area.get("id") for area in values if isinstance(area, dict)}
     if room_id not in available_ids:
         raise ValueError(
             f"Room ID {room_id} is not present; available IDs: "
@@ -992,9 +959,7 @@ def _prepare_room_request(
     area_setting = copy.deepcopy(smart_area)
     area_setting["activeIds"] = [room_id]
     selected_area = next(
-        area
-        for area in values
-        if isinstance(area, dict) and area.get("id") == room_id
+        area for area in values if isinstance(area, dict) and area.get("id") == room_id
     )
     return {
         "endpoint": ROOM_CLEANING_ENDPOINT,
@@ -1103,9 +1068,7 @@ async def _post_room_cleaning(
         except ApiError:
             response_errno = None
             error_code = None
-    effective_errno = (
-        error_code if error_code not in (None, 0) else response_errno
-    )
+    effective_errno = error_code if error_code not in (None, 0) else response_errno
     if effective_errno == 102:
         client_module._raise_smart_api_error(
             effective_errno,
@@ -1288,16 +1251,14 @@ async def _run_confirmed_room_test(
 
     form = prepared["form"]
     try:
-        http_result, push_events, push_error = (
-            await client._with_session_refresh(
-                lambda: _send_room_cleaning_attempt(
-                    client,
-                    device_id=device_id,
-                    clean_id=form["cleanId"],
-                    area_setting_json=form["areaSettingJson"],
-                    task_id=form["taskid"],
-                    observation_seconds=observation_seconds,
-                )
+        http_result, push_events, push_error = await client._with_session_refresh(
+            lambda: _send_room_cleaning_attempt(
+                client,
+                device_id=device_id,
+                clean_id=form["cleanId"],
+                area_setting_json=form["areaSettingJson"],
+                task_id=form["taskid"],
+                observation_seconds=observation_seconds,
             )
         )
     except InvalidSessionError as error:
@@ -1468,10 +1429,7 @@ async def _run(args: argparse.Namespace, client: Botslab360Client) -> int:
     else:
         print(f"  cleanId: {safe_map['cleanId']}")
     print(f"  cleanId type: {safe_map['cleanIdType']}")
-    print(
-        "  smartArea.activeIds present: "
-        f"{safe_map['smartAreaActiveIdsPresent']}"
-    )
+    print(f"  smartArea.activeIds present: {safe_map['smartAreaActiveIdsPresent']}")
     print(f"  smartArea.activeIds: {safe_map['smartAreaActiveIds']}")
     print(f"  source: {source}")
     print()
@@ -1517,9 +1475,7 @@ async def _run(args: argparse.Namespace, client: Botslab360Client) -> int:
                 "source": source,
                 "smartArea": safe_map["smartArea"],
                 "areaSettingTemplate": safe_map["areaSettingTemplate"],
-                "smartAreaActiveIdsPresent": safe_map[
-                    "smartAreaActiveIdsPresent"
-                ],
+                "smartAreaActiveIdsPresent": safe_map["smartAreaActiveIdsPresent"],
                 "smartAreaActiveIds": safe_map["smartAreaActiveIds"],
                 "rooms": rooms,
                 "pushEvents": captures,
@@ -1584,10 +1540,7 @@ def _arguments() -> argparse.Namespace:
         "--timeout",
         type=float,
         default=20.0,
-        help=(
-            "seconds to wait per infoType 20002 attempt "
-            "(two attempts, default: 20)"
-        ),
+        help=("seconds to wait per infoType 20002 attempt (two attempts, default: 20)"),
     )
     parser.add_argument(
         "--output",

@@ -24,11 +24,7 @@ IDENTITY = DeviceIdentity(
 
 
 def _script_path() -> Path:
-    return (
-        Path(__file__).parents[1]
-        / "diagnostics"
-        / "test_public_robot360_auth.py"
-    )
+    return Path(__file__).parents[1] / "diagnostics" / "test_public_robot360_auth.py"
 
 
 def _load_diagnostic() -> ModuleType:
@@ -45,7 +41,9 @@ def _load_diagnostic() -> ModuleType:
 def test_script_imports_only_public_botslab360_api() -> None:
     tree = ast.parse(_script_path().read_text(encoding="utf-8"))
     botslab_imports = [
-        node for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
         and node.module is not None
         and node.module.startswith("botslab360")
     ]
@@ -77,7 +75,7 @@ def test_public_captcha_flow_uses_exactly_two_auth_calls_and_closes(
 
     class FakeClient:
         @classmethod
-        def from_credentials(cls, **kwargs: object) -> "FakeClient":
+        def from_credentials(cls, **kwargs: object) -> FakeClient:
             calls.append(("factory", kwargs))
             return cls()
 
@@ -160,7 +158,7 @@ def test_direct_public_authentication_stops_after_session_and_closes(
 
     class FakeClient:
         @classmethod
-        def from_credentials(cls, **kwargs: object) -> "FakeClient":
+        def from_credentials(cls, **kwargs: object) -> FakeClient:
             assert kwargs["backend"] is AuthBackend.ROBOT360
             assert "region" not in kwargs
             return cls()
@@ -181,9 +179,7 @@ def test_direct_public_authentication_stops_after_session_and_closes(
 
     monkeypatch.setattr(module, "Botslab360Client", FakeClient)
 
-    assert asyncio.run(
-        module.run_auth_test("account", "password", IDENTITY)
-    ) == 0
+    assert asyncio.run(module.run_auth_test("account", "password", IDENTITY)) == 0
     assert calls == ["authenticate", "close"]
 
 

@@ -11,21 +11,22 @@ from .exceptions import (
     QucAuthenticationError,
 )
 from .models import (
+    ROOM_CLEAN_TIMES,
     AuthBackend,
     CaptchaChallenge,
     Device,
     DeviceIdentity,
     QihooCredentials,
-    ROOM_CLEAN_TIMES,
+    RobotStatus,
     Room,
     RoomCleaningSettings,
     RoomFanMode,
     RoomWaterLevel,
-    RobotStatus,
     SmartSession,
 )
 
 __all__ = [
+    "ROOM_CLEAN_TIMES",
     "ApiError",
     "AuthBackend",
     "AuthenticationError",
@@ -39,12 +40,11 @@ __all__ = [
     "InvalidSessionError",
     "QihooCredentials",
     "QucAuthenticationError",
-    "ROOM_CLEAN_TIMES",
+    "RobotStatus",
     "Room",
     "RoomCleaningSettings",
     "RoomFanMode",
     "RoomWaterLevel",
-    "RobotStatus",
     "SmartSession",
     "credentials_from_tokens",
     "derive_qid",

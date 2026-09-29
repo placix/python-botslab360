@@ -17,11 +17,11 @@ import httpx
 from botslab360 import ApiError, DeviceIdentity
 from botslab360.auth import BotslabAuth
 from botslab360.quc import (
+    _RSA_DER,
     ANDROID_360_PROFILE,
     OUTER_FORM_FIELDS,
     PASSWORD_LOGIN_PARAMETER_NAMES,
     QucAuth,
-    _RSA_DER,
     build_envelope,
 )
 
@@ -90,39 +90,21 @@ def print_dry_run() -> None:
     print(f"DES-key length: {profile.des_key_length}")
     print(f"signature_profile: {profile.signing_strategy}")
     print(f"random_charset_size: {len(profile.random_charset)}")
-    print(
-        "signing_suffix_present: "
-        f"{str(bool(profile.signing_suffix)).lower()}"
-    )
+    print(f"signing_suffix_present: {str(bool(profile.signing_suffix)).lower()}")
     print(
         "java_urlencoder: "
         f"{str(profile.inner_encoding_strategy == 'java_urlencoder').lower()}"
     )
     print(f"des_mode: {profile.des_mode}")
     print(f"des_iv_source: {profile.des_iv_source}")
-    print(
-        "offline_vectors_verified: "
-        f"{str(profile.native_crypto_verified).lower()}"
-    )
+    print(f"offline_vectors_verified: {str(profile.native_crypto_verified).lower()}")
     print(f"RSA fingerprint: {hashlib.sha256(_RSA_DER).hexdigest()}")
-    print(
-        "key_base64_padding: "
-        f"{str(profile.rsa_base64_padding).lower()}"
-    )
-    print(
-        "parad_base64_padding: "
-        f"{str(profile.des_base64_padding).lower()}"
-    )
+    print(f"key_base64_padding: {str(profile.rsa_base64_padding).lower()}")
+    print(f"parad_base64_padding: {str(profile.des_base64_padding).lower()}")
     print(f"generated_key_encoded_length: {len(envelope['key'])}")
     print(f"generated_parad_encoded_length: {len(envelope['parad'])}")
-    print(
-        "key_ends_with_padding: "
-        f"{str(envelope['key'].endswith('=')).lower()}"
-    )
-    print(
-        "parad_ends_with_padding: "
-        f"{str(envelope['parad'].endswith('=')).lower()}"
-    )
+    print(f"key_ends_with_padding: {str(envelope['key'].endswith('=')).lower()}")
+    print(f"parad_ends_with_padding: {str(envelope['parad'].endswith('=')).lower()}")
     print("sent: false")
 
 
@@ -168,9 +150,7 @@ async def _mint_session_once(
         print("Smart session not requested.")
         return 1
 
-    result = await BotslabAuth(http_client)._diagnose_login_once(
-        quc_result.credentials
-    )
+    result = await BotslabAuth(http_client)._diagnose_login_once(quc_result.credentials)
     print("Android 360 Smart Home login result:")
     print(f"  HTTP status: {result.http_status}")
     print(f"  errno: {result.errno}")
@@ -307,9 +287,7 @@ def main() -> int:
 
     action = "Created" if created else "Loaded"
     print(f"{action} device identity: {args.identity.expanduser()}")
-    confirmation_text = (
-        CAPTCHA_CONFIRMATION if args.continue_captcha else CONFIRMATION
-    )
+    confirmation_text = CAPTCHA_CONFIRMATION if args.continue_captcha else CONFIRMATION
     confirmation = input(f"Type {confirmation_text} to continue: ")
     if confirmation != confirmation_text:
         print("Not sent.")

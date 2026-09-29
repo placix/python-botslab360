@@ -235,9 +235,7 @@ def _parse_push_application_frame(frame: bytes) -> _PushApplicationFrame:
     """Parse one complete opcode-3 frame using the Android SDK layout."""
 
     if len(frame) < 10:
-        return _PushApplicationFrame(
-            b"", None, (), (), "malformed", "short_header"
-        )
+        return _PushApplicationFrame(b"", None, (), (), "malformed", "short_header")
 
     version = int.from_bytes(frame[0:2], "big")
     opcode = int.from_bytes(frame[2:4], "big")
@@ -345,9 +343,9 @@ class PushClient:
         self._reader_started_event = asyncio.Event()
         self._ready_event = asyncio.Event()
         self._reader_error: ApiError | None = None
-        self._application_frames: asyncio.Queue[
-            tuple[bytes, bytes] | ApiError
-        ] = asyncio.Queue()
+        self._application_frames: asyncio.Queue[tuple[bytes, bytes] | ApiError] = (
+            asyncio.Queue()
+        )
         self._transport_frames = _PushTransportFrameBuffer()
         self._tcp_connected = False
         self._reader_started = False
@@ -388,8 +386,7 @@ class PushClient:
             **self._diagnostics,
             "opcodeCounts": dict(self._diagnostics["opcodeCounts"]),
             "opcode3FrameClassifications": [
-                dict(item)
-                for item in self._diagnostics["opcode3FrameClassifications"]
+                dict(item) for item in self._diagnostics["opcode3FrameClassifications"]
             ],
         }
 
@@ -420,14 +417,12 @@ class PushClient:
                 b"\x00\x05\x00\x02"
                 + f"cv:{self._client_version}\n".encode("ascii")
                 + f"t:{self._heartbeat_timeout}\n".encode("ascii")
-                + f"u:{self._sid}@{PUSH_PRODUCT}\n".encode("utf-8")
+                + f"u:{self._sid}@{PUSH_PRODUCT}\n".encode()
                 + f"ts:{timestamp}".encode("ascii")
             )
             property_length = len(handshake) - 4
             handshake = (
-                handshake[:4]
-                + property_length.to_bytes(2, "big")
-                + handshake[4:]
+                handshake[:4] + property_length.to_bytes(2, "big") + handshake[4:]
             )
             self._writer.write(handshake)
             await self._writer.drain()
@@ -481,9 +476,7 @@ class PushClient:
                     )
                 self._diagnostics["tcpBytesReceived"] += len(chunk)
                 transport_frames = self._transport_frames.feed(chunk)
-                self._diagnostics["transportFramesReceived"] += len(
-                    transport_frames
-                )
+                self._diagnostics["transportFramesReceived"] += len(transport_frames)
                 opcode_counts = self._diagnostics["opcodeCounts"]
                 for opcode, frame in transport_frames:
                     opcode_counts[opcode] = opcode_counts.get(opcode, 0) + 1
@@ -520,9 +513,7 @@ class PushClient:
                     }
                     if parsed.reason is not None:
                         metadata["reason"] = parsed.reason
-                    self._diagnostics["opcode3FrameClassifications"].append(
-                        metadata
-                    )
+                    self._diagnostics["opcode3FrameClassifications"].append(metadata)
                     if parsed.classification == "malformed":
                         continue
                     if await self._acknowledge(parsed.prefix):
@@ -707,7 +698,7 @@ class PushClient:
         self._writer = None
         self._ready = False
 
-    async def __aenter__(self) -> "PushClient":
+    async def __aenter__(self) -> PushClient:
         await self.connect()
         return self
 

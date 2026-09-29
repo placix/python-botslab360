@@ -88,12 +88,41 @@ ANDROID_RANDOM_CHARSET_SHA256 = (
     "9ca4f3450cc3052e7bc1bdb2559264a9cd2ba8b8e2669e2048f9140a1efde689"
 )
 ANDROID_DUMMY_ITERATION_ORDER = (
-    "loginType", "os_sdk_version", "mid", "quc_sdk_version", "mname", "ua",
-    "os_manufacturer", "mSystemVersion", "head_type", "os_board", "sig",
-    "os_model", "password", "quc_lang", "sh", "vt_guid", "is_keep_alive",
-    "from", "needDeviceCheck", "oaid", "app", "trace_id", "ui_ver",
-    "method", "res_mode", "sw", "format", "qh_id", "device_os",
-    "device_lang", "sec_type", "v", "fields", "androidid", "username",
+    "loginType",
+    "os_sdk_version",
+    "mid",
+    "quc_sdk_version",
+    "mname",
+    "ua",
+    "os_manufacturer",
+    "mSystemVersion",
+    "head_type",
+    "os_board",
+    "sig",
+    "os_model",
+    "password",
+    "quc_lang",
+    "sh",
+    "vt_guid",
+    "is_keep_alive",
+    "from",
+    "needDeviceCheck",
+    "oaid",
+    "app",
+    "trace_id",
+    "ui_ver",
+    "method",
+    "res_mode",
+    "sw",
+    "format",
+    "qh_id",
+    "device_os",
+    "device_lang",
+    "sec_type",
+    "v",
+    "fields",
+    "androidid",
+    "username",
     "sdpi",
 )
 
@@ -339,9 +368,7 @@ def _signature_variant(
         parts.append(part)
 
     canonical = separator.join(parts) + suffix
-    digest = hashlib.md5(
-        canonical.encode("utf-8"), usedforsecurity=False
-    ).hexdigest()
+    digest = hashlib.md5(canonical.encode("utf-8"), usedforsecurity=False).hexdigest()
     suffix_name = "android-static-suffix" if suffix else "no-suffix"
     description = ", ".join(
         (
@@ -442,9 +469,7 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
         and isinstance(input_names, list)
         and input_names == expected_names
     ):
-        python_signature = compute_signature(
-            params, profile=ANDROID_360_PROFILE
-        )
+        python_signature = compute_signature(params, profile=ANDROID_360_PROFILE)
         signatures_match = android_signature == python_signature
         if signatures_match:
             compatible_signature = android_signature
@@ -463,8 +488,7 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
             (
                 f"Android dummy signature: {android_signature}",
                 f"Python dummy signature:  {python_signature}",
-                "Dummy signature: "
-                + ("SAME" if signatures_match else "DIFFERENT"),
+                "Dummy signature: " + ("SAME" if signatures_match else "DIFFERENT"),
                 "Python signature input: " + _signature_metadata(python_variant),
                 "Signature parameter names: " + ", ".join(input_names),
             )
@@ -501,9 +525,7 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
     )
     des_event = events.get("des_stage", {})
     if compatible_signature is None:
-        lines.append(
-            "Signature pipeline: DIFFERENT (no Android-compatible variant)"
-        )
+        lines.append("Signature pipeline: DIFFERENT (no Android-compatible variant)")
         lines.append("Pre-DES plaintext: NOT TESTED")
         lines.append("DES raw cipher: NOT TESTED")
         lines.append("Base64: NOT TESTED")
@@ -518,9 +540,7 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
         and isinstance(des_event.get("cipher_hex"), str)
     ):
         lines.append("Signature pipeline: SAME (confirmed Android variant)")
-        android_plaintext = base64.b64decode(
-            str(des_event["plaintext_base64"])
-        )
+        android_plaintext = base64.b64decode(str(des_event["plaintext_base64"]))
         current_plaintext = _serialize_inner_params(
             envelope_params,
             profile=ANDROID_360_PROFILE,
@@ -530,9 +550,7 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
             order,
             encoding="java-form",
         ).encode("utf-8")
-        current_difference = first_byte_difference(
-            android_plaintext, current_plaintext
-        )
+        current_difference = first_byte_difference(android_plaintext, current_plaintext)
         current_encoding_same_order = serialize_inner_params(
             envelope_params,
             order,
@@ -541,15 +559,17 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
         encoding_difference = first_byte_difference(
             android_plaintext, current_encoding_same_order
         )
-        matched_difference = first_byte_difference(
-            android_plaintext, matched_plaintext
-        )
+        matched_difference = first_byte_difference(android_plaintext, matched_plaintext)
         lines.extend(
             (
-                f"Android pre-DES length/SHA-256: {len(android_plaintext)} / "
-                f"{hashlib.sha256(android_plaintext).hexdigest()}",
-                f"Python current pre-DES length/SHA-256: {len(current_plaintext)} / "
-                f"{hashlib.sha256(current_plaintext).hexdigest()}",
+                (
+                    f"Android pre-DES length/SHA-256: {len(android_plaintext)} / "
+                    f"{hashlib.sha256(android_plaintext).hexdigest()}"
+                ),
+                (
+                    f"Python current pre-DES length/SHA-256: {len(current_plaintext)} / "
+                    f"{hashlib.sha256(current_plaintext).hexdigest()}"
+                ),
                 "Python current first difference: "
                 + (
                     "none"
@@ -564,9 +584,11 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
                 ),
                 "Pre-DES plaintext: "
                 + ("SAME" if matched_difference is None else "DIFFERENT"),
-                "Matched serialization: Android HashMap iteration order, "
-                "key=value pairs joined by &, Java URLEncoder UTF-8 values, "
-                "empty values included, no trailing separator",
+                (
+                    "Matched serialization: Android HashMap iteration order, "
+                    "key=value pairs joined by &, Java URLEncoder UTF-8 values, "
+                    "empty values included, no trailing separator"
+                ),
             )
         )
         if matched_difference is not None:
@@ -585,30 +607,31 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
                 DUMMY_DES_KEY,
                 base64_padding=False,
             )
-            python_cipher = base64.b64decode(
-                encoded + "=" * (-len(encoded) % 4)
-            )
+            python_cipher = base64.b64decode(encoded + "=" * (-len(encoded) % 4))
             android_cipher = bytes.fromhex(str(des_event["cipher_hex"]))
-            cipher_difference = first_byte_difference(
-                android_cipher, python_cipher
-            )
+            cipher_difference = first_byte_difference(android_cipher, python_cipher)
             lines.extend(
                 (
-                    f"DES transformation: {des_event.get('transformation')}, "
-                    f"key={des_event.get('key_ascii')!r}, "
-                    f"IV hex={des_event.get('iv_hex')}",
-                    f"Android raw cipher length/SHA-256: {len(android_cipher)} / "
-                    f"{hashlib.sha256(android_cipher).hexdigest()}",
-                    f"Python raw cipher length/SHA-256: {len(python_cipher)} / "
-                    f"{hashlib.sha256(python_cipher).hexdigest()}",
+                    (
+                        f"DES transformation: {des_event.get('transformation')}, "
+                        f"key={des_event.get('key_ascii')!r}, "
+                        f"IV hex={des_event.get('iv_hex')}"
+                    ),
+                    (
+                        f"Android raw cipher length/SHA-256: {len(android_cipher)} / "
+                        f"{hashlib.sha256(android_cipher).hexdigest()}"
+                    ),
+                    (
+                        f"Python raw cipher length/SHA-256: {len(python_cipher)} / "
+                        f"{hashlib.sha256(python_cipher).hexdigest()}"
+                    ),
                     "DES raw cipher: "
                     + ("SAME" if cipher_difference is None else "DIFFERENT"),
                 )
             )
             if cipher_difference is not None:
                 lines.append(
-                    "Cipher first difference: "
-                    + _format_difference(cipher_difference)
+                    "Cipher first difference: " + _format_difference(cipher_difference)
                 )
                 lines.append("Base64: NOT TESTED")
                 lines.append("Final envelope: DIFFERENT")
@@ -617,15 +640,12 @@ def compare_capture(events: Mapping[str, Mapping[str, object]]) -> list[str]:
                 base64_same = android_base64 == encoded
                 lines.append("Android raw cipher hex: " + android_cipher.hex())
                 lines.append("Python raw cipher hex:  " + python_cipher.hex())
-                lines.append(
-                    "Base64: " + ("SAME" if base64_same else "DIFFERENT")
-                )
+                lines.append("Base64: " + ("SAME" if base64_same else "DIFFERENT"))
                 lines.append(f"Android Base64: {android_base64}")
                 lines.append(f"Python Base64:  {encoded}")
                 parad_matches = (
                     isinstance(android_cipher_hash, str)
-                    and android_cipher_hash
-                    == hashlib.sha256(python_cipher).hexdigest()
+                    and android_cipher_hash == hashlib.sha256(python_cipher).hexdigest()
                 )
                 lines.append(
                     "Final envelope: "

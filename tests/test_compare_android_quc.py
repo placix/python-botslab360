@@ -65,7 +65,7 @@ def test_load_capture_ignores_unmarked_and_malformed_lines(tmp_path: Path) -> No
 def test_load_capture_accepts_utf8_bom(tmp_path: Path) -> None:
     module = _load_diagnostic()
     capture = tmp_path / "capture.txt"
-    payload = f'{module.PREFIX}{json.dumps({"event": "complete"})}\n'
+    payload = f"{module.PREFIX}{json.dumps({'event': 'complete'})}\n"
     capture.write_bytes(codecs.BOM_UTF8 + payload.encode("utf-8"))
 
     assert module.load_capture(capture)["complete"]["event"] == "complete"
@@ -73,7 +73,7 @@ def test_load_capture_accepts_utf8_bom(tmp_path: Path) -> None:
 
 def test_load_capture_accepts_utf16_boms(tmp_path: Path) -> None:
     module = _load_diagnostic()
-    payload = f'{module.PREFIX}{json.dumps({"event": "complete"})}\n'
+    payload = f"{module.PREFIX}{json.dumps({'event': 'complete'})}\n"
     for encoding in ("utf-16-le", "utf-16-be"):
         capture = tmp_path / f"capture-{encoding}.txt"
         bom = codecs.BOM_UTF16_LE if encoding.endswith("le") else codecs.BOM_UTF16_BE
@@ -96,9 +96,7 @@ def test_matching_synthetic_capture_reports_confirmed_results() -> None:
     common = module.python_common_values()
     params = module.reconstruct_android_params(common)
     assert params is not None
-    signature = module.compute_signature(
-        params, profile=module.ANDROID_360_PROFILE
-    )
+    signature = module.compute_signature(params, profile=module.ANDROID_360_PROFILE)
     params["sig"] = signature
     order = list(params)
     plaintext = module._serialize_inner_params(
@@ -171,9 +169,10 @@ def test_confirmed_android_random_charset_metadata() -> None:
     module = _load_diagnostic()
 
     assert len(module.ANDROID_RANDOM_CHARSET) == 70
-    assert module.hashlib.sha256(
-        module.ANDROID_RANDOM_CHARSET.encode()
-    ).hexdigest() == module.ANDROID_RANDOM_CHARSET_SHA256
+    assert (
+        module.hashlib.sha256(module.ANDROID_RANDOM_CHARSET.encode()).hexdigest()
+        == module.ANDROID_RANDOM_CHARSET_SHA256
+    )
     assert set(module.ANDROID_RANDOM_CHARSET) - set(ascii_letters + digits) == set(
         "!#$%&*@^"
     )
