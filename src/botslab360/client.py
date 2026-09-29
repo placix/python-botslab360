@@ -29,6 +29,7 @@ from .models import (
     CaptchaChallenge,
     Device,
     DeviceIdentity,
+    NetworkInfo,
     QihooCredentials,
     RobotStatus,
     Room,
@@ -45,6 +46,7 @@ from .protocol import (
     DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
     DEFAULT_PUSH_HOST,
     DEFAULT_PUSH_PORT,
+    NETWORK_INFO_TYPE,
     STATUS_INFO_TYPE,
     PushClient,
 )
@@ -559,6 +561,60 @@ class Botslab360Client:
             lambda: self._get_room_map_once(device_id=device_id, timeout=timeout)
         )
         return list(room_map.rooms)
+
+    async def get_network_info(
+        self,
+        device: Device | str,
+        *,
+        timeout: float = 30.0,
+    ) -> NetworkInfo:
+        """Return station network information reported by one robot."""
+
+        device_id = _device_id(device)
+        task_id = str(uuid4())
+        return await self._with_session_refresh(
+            lambda: self._get_network_info_once(
+                device_id=device_id,
+                task_id=task_id,
+                timeout=timeout,
+            )
+        )
+
+    async def _get_network_info_once(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        timeout: float,
+    ) -> NetworkInfo:
+        if self._session is None:
+            raise AuthenticationError(
+                "Authentication is required before requesting network info",
+                phase="authentication",
+            )
+
+        push = PushClient(
+            self._session.sid,
+            self._session.push_key,
+            host=self._push_host,
+            port=self._push_port,
+            client_version=self._push_client_version,
+            heartbeat_timeout=self._push_heartbeat_timeout,
+            heartbeat_interval=self._push_heartbeat_interval,
+        )
+        async with push:
+            await self._post_robot_request(
+                device_id=device_id,
+                info_type=NETWORK_INFO_TYPE,
+                data="",
+                task_id=task_id,
+                operation="network info request",
+            )
+            return await push.wait_for_network_info(
+                device_id=device_id,
+                task_id=task_id,
+                timeout=timeout,
+            )
 
     async def clean_rooms(
         self,

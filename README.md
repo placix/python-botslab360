@@ -6,7 +6,7 @@ This project provides an unofficial Python interface for selected 360 robot vacu
 
 > [!WARNING]
 > This project is unofficial and not affiliated with Botslab, Qihoo 360 or 360 Smart Home.
-> Version `0.4.1` should be considered experimental.
+> This project should be considered experimental.
 
 ## Features
 
@@ -19,6 +19,7 @@ Currently implemented:
 - Automatic Smart Home SID refresh
 - Device discovery
 - Robot status retrieval
+- Robot station network-information retrieval
 - TCP / push protocol communication
 - AES decryption of push messages
 - Current room discovery from the robot map
@@ -266,6 +267,23 @@ Cleaned area: 5
 Cleaning time: 157
 Error code: 0
 ```
+
+## Network information
+
+The robot can report its current station network identity through the public
+API. Missing vendor fields are returned as `None`, and MAC addresses are
+normalized to lowercase colon-separated form.
+
+```python
+network_info = await client.get_network_info(robot)
+
+print(network_info.station_ip)
+print(network_info.station_mac)
+print(network_info.station_signal)
+```
+
+Treat SSIDs as potentially sensitive when displaying or logging
+`network_info.station_ssid`.
 
 ## Session handling
 

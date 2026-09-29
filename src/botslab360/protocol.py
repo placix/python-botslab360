@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import ipaddress
 import json
+import re
 import time
 from contextlib import suppress
 from dataclasses import dataclass
@@ -15,7 +17,7 @@ from cryptography.hazmat.primitives import padding
 from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
 
 from .exceptions import ApiError
-from .models import RobotStatus
+from .models import NetworkInfo, RobotStatus
 
 DEFAULT_PUSH_HOST = "47.254.151.104"
 DEFAULT_PUSH_PORT = 443
@@ -28,10 +30,13 @@ ANDROID_360_PUSH_HEARTBEAT_TIMEOUT = 20
 ANDROID_360_PUSH_HEARTBEAT_INTERVAL = 15.0
 PUSH_PRODUCT = "60009"
 STATUS_INFO_TYPE = "20001"
+NETWORK_INFO_TYPE = "21019"
+COMMAND_RESPONSE_EVENT = "10"
 PUSH_PROTOCOL_VERSION = 5
 PUSH_BIND_ACK_OPCODE = 6
 PUSH_MESSAGE_OPCODE = 3
 PUSH_READY_TIMEOUT = 15.0
+_MAC_PATTERN = re.compile(r"(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}|[0-9a-fA-F]{12}")
 
 
 def _protocol_error(message: str, *, phase: str = "protocol") -> ApiError:
@@ -118,6 +123,81 @@ def _optional_int(value: object, *, field: str) -> int | None:
     if isinstance(value, bool) or not isinstance(value, int):
         raise _protocol_error(f"Status field {field} is invalid")
     return value
+
+
+def _optional_text(value: object, *, field: str) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise _protocol_error(f"Network info field {field} is invalid")
+    return value
+
+
+def _optional_ip(value: object, *, field: str) -> str | None:
+    text = _optional_text(value, field=field)
+    if text is None:
+        return None
+    try:
+        return str(ipaddress.ip_address(text))
+    except ValueError as exc:
+        raise _protocol_error(f"Network info field {field} is invalid") from exc
+
+
+def _optional_mac(value: object, *, field: str) -> str | None:
+    text = _optional_text(value, field=field)
+    if text is None:
+        return None
+    if _MAC_PATTERN.fullmatch(text) is None:
+        raise _protocol_error(f"Network info field {field} is invalid")
+    compact = text.replace(":", "").replace("-", "").lower()
+    return ":".join(compact[index : index + 2] for index in range(0, 12, 2))
+
+
+def _optional_network_int(value: object, *, field: str) -> int | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise _protocol_error(f"Network info field {field} is invalid")
+    return value
+
+
+def parse_network_info_event(
+    event: object,
+    *,
+    device_id: str,
+    task_id: str,
+) -> NetworkInfo | None:
+    """Return network info only for a matching command response."""
+
+    if not isinstance(event, dict):
+        raise _protocol_error("Push event is invalid")
+    if event.get("sn") != device_id or event.get("taskid") != task_id:
+        return None
+    if str(event.get("event")) != COMMAND_RESPONSE_EVENT:
+        return None
+
+    protocol = _json_object(event.get("data"), field="protocol")
+    if str(protocol.get("infoType")) != NETWORK_INFO_TYPE:
+        return None
+    payload = _json_object(protocol.get("data"), field="network info data")
+
+    return NetworkInfo(
+        station_ip=_optional_ip(payload.get("staIp"), field="staIp"),
+        station_mac=_optional_mac(payload.get("staMac"), field="staMac"),
+        station_ssid=_optional_text(payload.get("staId"), field="staId"),
+        station_signal=_optional_network_int(
+            payload.get("staSignal"),
+            field="staSignal",
+        ),
+        ap_id=_optional_text(payload.get("apId"), field="apId"),
+        ap_ip=_optional_ip(payload.get("apIp"), field="apIp"),
+        compile_version=_optional_network_int(
+            payload.get("compileVer"),
+            field="compileVer",
+        ),
+        mcu_version=_optional_text(payload.get("mcuVer"), field="mcuVer"),
+        rssi=_optional_network_int(payload.get("rssi"), field="rssi"),
+    )
 
 
 def parse_status_event(
@@ -618,6 +698,45 @@ class PushClient:
                 "Timed out waiting for robot status",
                 phase="timeout",
             ) from exc
+
+    async def wait_for_network_info(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+        timeout: float,
+    ) -> NetworkInfo:
+        """Wait for one matching network-info command response."""
+
+        try:
+            return await asyncio.wait_for(
+                self._wait_for_network_info(device_id=device_id, task_id=task_id),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError as exc:
+            raise _protocol_error(
+                "Timed out waiting for robot network info",
+                phase="timeout",
+            ) from exc
+
+    async def _wait_for_network_info(
+        self,
+        *,
+        device_id: str,
+        task_id: str,
+    ) -> NetworkInfo:
+        if self._reader is None or self._writer is None:
+            raise _protocol_error("Push client is not connected", phase="transport")
+
+        while True:
+            event = await self.read_event()
+            network_info = parse_network_info_event(
+                event,
+                device_id=device_id,
+                task_id=task_id,
+            )
+            if network_info is not None:
+                return network_info
 
     async def _wait_for_status(
         self,

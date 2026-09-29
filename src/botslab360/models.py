@@ -101,6 +101,21 @@ class Device:
 
 
 @dataclass(frozen=True, slots=True)
+class NetworkInfo:
+    """Station network information reported by a Botslab/360 robot."""
+
+    station_ip: str | None
+    station_mac: str | None
+    station_ssid: str | None
+    station_signal: int | None
+    ap_id: str | None = None
+    ap_ip: str | None = None
+    compile_version: int | None = None
+    mcu_version: str | None = None
+    rssi: int | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class Room:
     """A room from the robot's current smart-area map."""
 
