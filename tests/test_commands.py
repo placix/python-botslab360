@@ -117,6 +117,49 @@ def test_command_sends_verified_request(
     run(scenario())
 
 
+@pytest.mark.parametrize(
+    ("enabled", "data"),
+    [
+        (False, '{"cmd":"setMopSwitch","value":1}'),
+        (True, '{"cmd":"setMopSwitch","value":2}'),
+    ],
+)
+def test_set_mop_only_sends_verified_request(enabled: bool, data: str) -> None:
+    async def scenario() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/common/user/login":
+                return login_response()
+
+            form = parse_qs((await request.aread()).decode())
+            assert form["sn"] == [DEVICE.id]
+            assert form["infoType"] == ["21024"]
+            assert form["data"] == [data]
+            UUID(form["taskid"][0])
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler)
+        ) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            await client.authenticate()
+            await client.set_mop_only(DEVICE, enabled)
+
+    run(scenario())
+
+
+def test_set_mop_only_rejects_non_boolean_value() -> None:
+    async def scenario() -> None:
+        transport = httpx.MockTransport(
+            lambda request: pytest.fail("No HTTP request expected")
+        )
+        async with httpx.AsyncClient(transport=transport) as http_client:
+            client = Botslab360Client(Q, T, http_client=http_client)
+            with pytest.raises(TypeError, match="enabled must be a bool"):
+                await client.set_mop_only(DEVICE, 1)  # type: ignore[arg-type]
+
+    run(scenario())
+
+
 def test_command_requires_authentication() -> None:
     async def scenario() -> None:
         transport = httpx.MockTransport(

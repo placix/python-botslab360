@@ -77,15 +77,16 @@ Do not modify protocol behavior based only on assumptions. Vendor/protocol behav
 the analyzed Android app. It is not a verified room sweep/mop selector. Do not
 interpret it as numeric values or write numeric cleaning modes into it.
 
-The separate `SweepStrategy.cleanMode` currently has partial static evidence
-for `1` = mop and `2` = sweep, but its relationship to room cleaning requests
-has not been verified. Do not wire it into room cleaning without capture-backed
-evidence.
+Cleaning mode is controlled by two confirmed concepts. On the tested S9-P,
+status field `mopStatus` 0 means the wiping assembly is absent and 1 means it is
+present. Unknown integer values remain model-dependent and must stay
+representable without guessed enum meanings. Vendor command `21024` with
+`setMopSwitch` value 1 disables mop-only mode and value 2 enables it.
 
-The next cleaning-mode verification should capture the same room through the
-vendor app for sweep, mop, and sweep plus mop, then compare the current
-`MapInfo.smartArea`, any `SweepStrategy`, the exact outgoing
-`setAreaAndCleaning` request, and related commands sent immediately beforehand.
+The known status payload does not expose the current mop-only switch. Do not
+fabricate synchronized `mop_only` state or derive it from `RobotStatus.state`,
+`SweepArea.mode`, `waterPump`, or the unverified `SweepStrategy.cleanMode`
+path. Water level remains independent from cleaning mode.
 
 ## Validation
 

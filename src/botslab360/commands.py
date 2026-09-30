@@ -26,3 +26,11 @@ LOCATE = CommandSpec(
     data='{"ctrlCode":3010}',
     requires_task_id=False,
 )
+MOP_ONLY_OFF = CommandSpec(
+    info_type="21024",
+    data='{"cmd":"setMopSwitch","value":1}',
+)
+MOP_ONLY_ON = CommandSpec(
+    info_type="21024",
+    data='{"cmd":"setMopSwitch","value":2}',
+)

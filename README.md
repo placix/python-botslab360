@@ -172,6 +172,27 @@ async with Botslab360Client(q, t) as client:
     await client.locate(robot)
 ```
 
+### Mop hardware and mop-only mode
+
+`RobotStatus.mop_status` exposes the raw integer reported by status command
+`20001`. On the tested S9-P, `0` means that the wiping assembly is absent and
+`1` means that it is present. Other integer values are preserved without an
+assumed meaning because their semantics may be model-dependent.
+
+Mop-only mode can be controlled through the public API:
+
+```python
+await client.set_mop_only(robot, False)  # Sweep, or sweep and mop with hardware
+await client.set_mop_only(robot, True)  # Mop only
+```
+
+Disabling mop-only sends the verified vendor switch value `1`; enabling it
+sends value `2`. With value `1`, the effective mode depends on whether wiping
+hardware is installed. The current mop-only switch value is not exposed by the
+known status payload, so the library does not fabricate a synchronized
+`mop_only` state or derived cleaning mode. Water level remains an independent
+room setting.
+
 ### Room cleaning
 
 Room cleaning always fetches the current map before validating and sending the
@@ -253,6 +274,7 @@ Depending on the robot model, status information may include:
 - Cleaning time in seconds
 - Error code
 - Online state
+- Wiping assembly status (`mop_status`)
 
 Example:
 

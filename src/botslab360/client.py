@@ -17,6 +17,8 @@ import httpx
 from .auth import SMART_HOME_BASE_URL, BotslabAuth, credentials_from_tokens
 from .commands import (
     LOCATE,
+    MOP_ONLY_OFF,
+    MOP_ONLY_ON,
     PAUSE,
     RESUME,
     RETURN_TO_DOCK,
@@ -831,6 +833,14 @@ class Botslab360Client:
         """Ask the robot to identify its location audibly."""
 
         await self._execute_command(device, LOCATE, "locate robot")
+
+    async def set_mop_only(self, device: Device | str, enabled: bool) -> None:
+        """Enable or disable mop-only cleaning."""
+
+        if not isinstance(enabled, bool):
+            raise TypeError("enabled must be a bool")
+        command = MOP_ONLY_ON if enabled else MOP_ONLY_OFF
+        await self._execute_command(device, command, "set mop-only mode")
 
     async def _execute_command(
         self,

@@ -151,6 +151,26 @@ def test_parse_status_event_returns_typed_status() -> None:
     assert status.cleaned_area == 4200
     assert status.cleaning_time == 1800
     assert status.error_code == 0
+    assert status.mop_status is None
+
+
+@pytest.mark.parametrize("mop_status", [0, 1, 2, 37])
+def test_parse_status_event_preserves_mop_status(mop_status: int) -> None:
+    event = synthetic_event()
+    protocol = json.loads(event["data"])
+    status_data = protocol["data"]
+    assert isinstance(status_data, dict)
+    status_data["mopStatus"] = mop_status
+    event["data"] = json.dumps(protocol, separators=(",", ":"))
+
+    status = parse_status_event(
+        event,
+        device_id="synthetic-device-1",
+        task_id="synthetic-task",
+    )
+
+    assert status is not None
+    assert status.mop_status == mop_status
 
 
 def test_parse_status_event_ignores_unrelated_messages() -> None:

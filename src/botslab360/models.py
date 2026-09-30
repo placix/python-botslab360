@@ -188,6 +188,7 @@ class RobotStatus:
     cleaned_area_m2: int | None
     cleaning_time_seconds: int | None
     error_code: int
+    mop_status: int | None = None
 
     @property
     def cleaned_area(self) -> int | None:

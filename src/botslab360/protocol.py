@@ -258,6 +258,7 @@ def parse_status_event(
             field="cleanTime",
         ),
         error_code=error_code,
+        mop_status=_optional_int(status.get("mopStatus"), field="mopStatus"),
     )
 
 
