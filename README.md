@@ -154,6 +154,15 @@ async def main() -> None:
 asyncio.run(main())
 ```
 
+`RobotStatus` also exposes optional diagnostic values reported by status
+command `20001`: the raw lifetime-area counter, lifetime cleaning time in
+seconds, raw current and previous sub-state, raw map position, raw heading,
+timer status, and auto-boost state. The units of `total_cleaned_area_raw`,
+`position_x`, `position_y`, and `heading` are not established, so these values
+are returned without conversion or a claimed physical unit. Missing fields
+remain `None`; raw integer states are intentionally not assigned guessed
+meanings.
+
 For real applications, do not hard-code credentials. Load them securely from configuration or environment-specific secret storage.
 
 ## Robot control

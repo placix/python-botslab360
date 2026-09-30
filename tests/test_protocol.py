@@ -133,8 +133,26 @@ def test_decode_unencrypted_push_envelope() -> None:
 
 
 def test_parse_status_event_returns_typed_status() -> None:
+    event = synthetic_event()
+    protocol = json.loads(event["data"])
+    status_data = protocol["data"]
+    assert isinstance(status_data, dict)
+    status_data.update(
+        {
+            "subMode": "smart",
+            "lastSubMode": "total",
+            "allArea": 8400,
+            "allTime": 3600,
+            "pos": [120, 340],
+            "phi": 90,
+            "timerStatus": 1,
+            "autoBoost": 0,
+        }
+    )
+    event["data"] = json.dumps(protocol, separators=(",", ":"))
+
     status = parse_status_event(
-        synthetic_event(),
+        event,
         device_id="synthetic-device-1",
         task_id="synthetic-task",
     )
@@ -152,6 +170,68 @@ def test_parse_status_event_returns_typed_status() -> None:
     assert status.cleaning_time == 1800
     assert status.error_code == 0
     assert status.mop_status is None
+    assert status.total_cleaned_area_raw == 8400
+    assert status.total_cleaning_time_seconds == 3600
+    assert status.sub_state == "smart"
+    assert status.last_sub_state == "total"
+    assert status.position_x == 120
+    assert status.position_y == 340
+    assert status.heading == 90
+    assert status.timer_status == 1
+    assert status.auto_boost == 0
+
+
+def test_parse_status_event_leaves_optional_diagnostics_unknown_when_missing() -> None:
+    event = synthetic_event()
+    protocol = json.loads(event["data"])
+    status_data = protocol["data"]
+    assert isinstance(status_data, dict)
+    for field in (
+        "allArea",
+        "allTime",
+        "subMode",
+        "lastSubMode",
+        "pos",
+        "phi",
+        "timerStatus",
+        "autoBoost",
+    ):
+        status_data.pop(field, None)
+    event["data"] = json.dumps(protocol, separators=(",", ":"))
+
+    status = parse_status_event(
+        event,
+        device_id="synthetic-device-1",
+        task_id="synthetic-task",
+    )
+
+    assert status is not None
+    assert status.total_cleaned_area_raw is None
+    assert status.total_cleaning_time_seconds is None
+    assert status.sub_state is None
+    assert status.last_sub_state is None
+    assert status.position_x is None
+    assert status.position_y is None
+    assert status.heading is None
+    assert status.timer_status is None
+    assert status.auto_boost is None
+
+
+@pytest.mark.parametrize("position", [[1], [1, "2"], "1,2", [True, 2]])
+def test_parse_status_event_rejects_invalid_position(position: object) -> None:
+    event = synthetic_event()
+    protocol = json.loads(event["data"])
+    status_data = protocol["data"]
+    assert isinstance(status_data, dict)
+    status_data["pos"] = position
+    event["data"] = json.dumps(protocol, separators=(",", ":"))
+
+    with pytest.raises(ApiError, match="Status field pos is invalid"):
+        parse_status_event(
+            event,
+            device_id="synthetic-device-1",
+            task_id="synthetic-task",
+        )
 
 
 @pytest.mark.parametrize("mop_status", [0, 1, 2, 37])

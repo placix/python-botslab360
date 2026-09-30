@@ -189,6 +189,15 @@ class RobotStatus:
     cleaning_time_seconds: int | None
     error_code: int
     mop_status: int | None = None
+    total_cleaned_area_raw: int | None = None
+    total_cleaning_time_seconds: int | None = None
+    sub_state: str | None = None
+    last_sub_state: str | None = None
+    position_x: int | None = None
+    position_y: int | None = None
+    heading: int | None = None
+    timer_status: int | None = None
+    auto_boost: int | None = None
 
     @property
     def cleaned_area(self) -> int | None:

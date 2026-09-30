@@ -125,6 +125,28 @@ def _optional_int(value: object, *, field: str) -> int | None:
     return value
 
 
+def _optional_status_text(value: object, *, field: str) -> str | None:
+    if value in (None, ""):
+        return None
+    if not isinstance(value, str):
+        raise _protocol_error(f"Status field {field} is invalid")
+    return value
+
+
+def _optional_position(value: object) -> tuple[int | None, int | None]:
+    if value in (None, []):
+        return None, None
+    if (
+        not isinstance(value, list)
+        or len(value) < 2
+        or any(
+            isinstance(item, bool) or not isinstance(item, int) for item in value[:2]
+        )
+    ):
+        raise _protocol_error("Status field pos is invalid")
+    return value[0], value[1]
+
+
 def _optional_text(value: object, *, field: str) -> str | None:
     if value in (None, ""):
         return None
@@ -245,6 +267,8 @@ def parse_status_event(
     else:
         raise _protocol_error("Status field errorState is invalid")
 
+    position_x, position_y = _optional_position(status.get("pos"))
+
     return RobotStatus(
         device_id=device_id,
         online=online,
@@ -259,6 +283,24 @@ def parse_status_event(
         ),
         error_code=error_code,
         mop_status=_optional_int(status.get("mopStatus"), field="mopStatus"),
+        total_cleaned_area_raw=_optional_int(status.get("allArea"), field="allArea"),
+        total_cleaning_time_seconds=_optional_int(
+            status.get("allTime"),
+            field="allTime",
+        ),
+        sub_state=_optional_status_text(status.get("subMode"), field="subMode"),
+        last_sub_state=_optional_status_text(
+            status.get("lastSubMode"),
+            field="lastSubMode",
+        ),
+        position_x=position_x,
+        position_y=position_y,
+        heading=_optional_int(status.get("phi"), field="phi"),
+        timer_status=_optional_int(
+            status.get("timerStatus"),
+            field="timerStatus",
+        ),
+        auto_boost=_optional_int(status.get("autoBoost"), field="autoBoost"),
     )
 
 
