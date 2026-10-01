@@ -1,75 +1,54 @@
 # botslab360
 
-Async Python client for Botslab / 360 robot vacuums.
+[![Validate](https://github.com/placix/python-botslab360/actions/workflows/validate.yml/badge.svg)](https://github.com/placix/python-botslab360/actions/workflows/validate.yml)
+[![PyPI](https://img.shields.io/pypi/v/botslab360.svg)](https://pypi.org/project/botslab360/)
+[![Python](https://img.shields.io/pypi/pyversions/botslab360.svg)](https://pypi.org/project/botslab360/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-This project provides an unofficial Python interface for selected 360 robot vacuum cleaners and is intended as a reusable library for integrations such as Home Assistant.
+`botslab360` is an asynchronous Python client for selected Botslab / 360 robot
+vacuums. It provides a reusable protocol layer for applications such as the
+[`home-assistant-botslab360`](https://github.com/placix/home-assistant-botslab360)
+custom integration.
 
 > [!WARNING]
-> This project is unofficial and not affiliated with Botslab, Qihoo 360 or 360 Smart Home.
-> This project should be considered experimental.
+> This project is unofficial, experimental, and not affiliated with Botslab,
+> Qihoo 360, or 360 Smart Home.
 
 ## Features
 
-Currently implemented:
+- Qihoo Q/T session authentication and optional headless email/password login;
+- explicit Botslab / CloudSmart and 360Robot account backends;
+- captcha continuation controlled by the calling application;
+- Smart Home login, session handling, and one automatic SID refresh;
+- device discovery and robot status retrieval;
+- station network-information retrieval;
+- TCP/push communication and AES decryption of push messages;
+- room discovery from the current robot map;
+- single-room and multi-room cleaning;
+- start, pause, resume, return-to-dock, locate, and mop-only controls.
 
-- Qihoo `Q` / `T` session authentication
-- Optional headless Qihoo email/password authentication
-- Automatic `qid` derivation
-- Smart Home login and session handling
-- Automatic Smart Home SID refresh
-- Device discovery
-- Robot status retrieval
-- Robot station network-information retrieval
-- TCP / push protocol communication
-- AES decryption of push messages
-- Current room discovery from the robot map
-- Single-room and multi-room cleaning
-- Start cleaning
-- Pause cleaning
-- Resume cleaning
-- Return to dock
-- Locate robot
-
-Device control and room/map support have been verified with:
-
-- 360 S9-P using the 360Robot backend
-
-Other models may work but have not yet been verified.
+The current device-control and room features have been verified with a 360 S9-P
+using the 360Robot backend. Other models may work but have not been verified.
 
 ## Installation
 
+Install the published package from PyPI:
+
 ```bash
-pip install botslab360
+python -m pip install botslab360
 ```
 
 Python 3.10 or newer is required.
 
 ## Authentication
 
-The existing authentication path uses Qihoo 360 account session tokens:
+Existing integrations can authenticate with Qihoo 360 `Q` and `T` session
+tokens. New applications can instead let the library obtain those tokens from
+an email/password login. Botslab / CloudSmart and original 360Robot accounts
+use separate backends and are never tried as automatic fallbacks.
 
-- `Q`
-- `T`
-
-These tokens can be obtained from an authenticated 360 web session.
-
-They must be treated like credentials.
-
-Never publish or log:
-
-- `Q`
-- `T`
-- `qid`
-- `sid`
-- `pushKey`
-
-Alternatively, the library can obtain Q/T with an email/password QUC login.
-There are two separate account backends, selected explicitly with
-`AuthBackend`. They are never tried as automatic fallbacks for each other.
-
-For a Botslab / CloudSmart account, the existing regional backend remains the
-default. Omitting `backend` is equivalent to `AuthBackend.BOTSLAB`, and omitting
-`region` continues to select `eu1`:
+For a Botslab / CloudSmart account, the regional backend is the default.
+Omitting `region` selects `eu1`:
 
 ```python
 from botslab360 import AuthBackend, Botslab360Client, DeviceIdentity
@@ -84,8 +63,8 @@ client = Botslab360Client.from_credentials(
 )
 ```
 
-For an account from the original 360Robot application, select the non-regional
-backend. Passing `region` with this backend is rejected:
+For an account created in the original 360Robot application, select the
+non-regional backend. Supplying `region` for this backend is rejected:
 
 ```python
 client = Botslab360Client.from_credentials(
@@ -96,15 +75,14 @@ client = Botslab360Client.from_credentials(
 )
 ```
 
-After creating a new identity, store its `mid`, `android_id`, and `m2` values
-in the application's secure configuration and reconstruct the same
-`DeviceIdentity` for later logins. These identifiers are not account secrets,
-but they should not be rotated on every login.
+Persist the generated identity's `mid`, `android_id`, and `m2` values in secure
+application configuration and reconstruct the same `DeviceIdentity` for later
+logins. These identifiers are not account secrets, but should not be rotated on
+every login.
 
 The library does not solve captchas automatically. `authenticate()` raises
-`CaptchaRequired` with image bytes and a challenge object. Present the image
-to the user, collect the code without logging it, then explicitly call
-`continue_authentication(challenge, code)`. Each retry is caller initiated.
+`CaptchaRequired` with image bytes and a challenge. Present the image to the
+user, collect the code without logging it, and continue explicitly:
 
 ```python
 from botslab360 import CaptchaRequired
@@ -114,14 +92,11 @@ try:
 except CaptchaRequired as exc:
     show_captcha_to_user(exc.challenge.image)
     captcha_code = await read_captcha_code_without_logging()
-    session = await client.continue_authentication(
-        exc.challenge,
-        captcha_code,
-    )
+    session = await client.continue_authentication(exc.challenge, captcha_code)
 ```
 
-On success, both methods return a ready `SmartSession`; callers never need to
-handle Q, T, or qid themselves.
+Both successful authentication methods return a ready `SmartSession`; callers
+do not need to handle Q, T, or qid themselves.
 
 ## Basic usage
 
@@ -139,40 +114,26 @@ async def main() -> None:
         await client.authenticate()
 
         devices = await client.get_devices()
+        robot = devices[0]
+        status = await client.get_status(robot.id)
 
-        for device in devices:
-            print(device.name)
-            print(device.model)
-
-            status = await client.get_status(device.id)
-
-            print(f"Battery: {status.battery}%")
-            print(f"State: {status.state}")
-            print(f"Charging: {status.charging}")
+        print(robot.name, robot.model)
+        print(f"Battery: {status.battery}%")
+        print(f"State: {status.state}")
 
 
 asyncio.run(main())
 ```
 
-`RobotStatus` also exposes optional diagnostic values reported by status
-command `20001`: the raw lifetime-area counter, lifetime cleaning time in
-seconds, raw current and previous sub-state, raw map position, raw heading,
-timer status, and auto-boost state. The units of `total_cleaned_area_raw`,
-`position_x`, `position_y`, and `heading` are not established, so these values
-are returned without conversion or a claimed physical unit. Missing fields
-remain `None`; raw integer states are intentionally not assigned guessed
-meanings.
-
-For real applications, do not hard-code credentials. Load them securely from configuration or environment-specific secret storage.
+Real applications should load credentials from secure configuration or
+environment-specific secret storage instead of hard-coding them.
 
 ## Robot control
 
 ```python
 async with Botslab360Client(q, t) as client:
     await client.authenticate()
-
-    devices = await client.get_devices()
-    robot = devices[0]
+    robot = (await client.get_devices())[0]
 
     await client.start_cleaning(robot)
     await client.pause(robot)
@@ -181,32 +142,23 @@ async with Botslab360Client(q, t) as client:
     await client.locate(robot)
 ```
 
-### Mop hardware and mop-only mode
-
-`RobotStatus.mop_status` exposes the raw integer reported by status command
-`20001`. On the tested S9-P, `0` means that the wiping assembly is absent and
-`1` means that it is present. Other integer values are preserved without an
-assumed meaning because their semantics may be model-dependent.
-
-Mop-only mode can be controlled through the public API:
+Mop-only mode is also available. Disabling it selects sweep, or sweep and mop
+when wiping hardware is installed; enabling it selects mop only:
 
 ```python
-await client.set_mop_only(robot, False)  # Sweep, or sweep and mop with hardware
-await client.set_mop_only(robot, True)  # Mop only
+await client.set_mop_only(robot, False)
+await client.set_mop_only(robot, True)
 ```
 
-Disabling mop-only sends the verified vendor switch value `1`; enabling it
-sends value `2`. With value `1`, the effective mode depends on whether wiping
-hardware is installed. The current mop-only switch value is not exposed by the
-known status payload, so the library does not fabricate a synchronized
-`mop_only` state or derived cleaning mode. Water level remains an independent
-room setting.
+The known status payload does not report the current mop-only switch. The
+library therefore does not invent a synchronized state or derived cleaning
+mode. Water level remains an independent room setting.
 
-### Room cleaning
+## Room cleaning
 
-Room cleaning always fetches the current map before validating and sending the
-selection. Room IDs are device- and map-specific; do not hard-code IDs without
-first reading the current room list.
+Room cleaning fetches the current map before validating and sending a
+selection. Room IDs belong to a particular device and map; always read the
+current room list rather than hard-coding them.
 
 ```python
 rooms = await client.get_rooms(robot)
@@ -214,29 +166,14 @@ rooms = await client.get_rooms(robot)
 for room in rooms:
     print(room.id, room.name, room.vertices)
 
-await client.clean_rooms(robot, [1])
-```
-
-Pass multiple IDs to clean several rooms in one request:
-
-```python
 await client.clean_rooms(robot, [1, 6])
 ```
 
-When supplied by the robot, `Room.vertices` is the room polygon in the vendor's
-map coordinate system (integer millimetres, original point order). Missing or
-malformed polygons are exposed as `None`; raw MapInfo data is not exposed.
-
-The Android room-attribute UI defines one or two cleaning passes, four suction
-modes, and three mopping water levels. Optional settings can override these
-verified attributes for selected rooms in one cleaning request:
+Verified per-run settings can override pass count, suction, and water level for
+selected rooms:
 
 ```python
-from botslab360 import (
-    RoomCleaningSettings,
-    RoomFanMode,
-    RoomWaterLevel,
-)
+from botslab360 import RoomCleaningSettings, RoomFanMode, RoomWaterLevel
 
 await client.clean_rooms(
     robot,
@@ -251,59 +188,25 @@ await client.clean_rooms(
 )
 ```
 
-These settings apply only to the selected cleaning run. Omitted settings keep
-the current values from the freshly fetched room map, including existing
-vendor values and unrelated fields. The supported suction values are `quiet`,
-`auto` (shown as Standard mode), `strong` (shown as Powerful mode), and `max`.
-Water levels are `1` (low), `2` (medium), and `3` (high). An existing vendor
-`waterPump=0` value is preserved when not overridden, but `0` is not exposed as
-an "off" choice because that meaning has not been confirmed.
+Omitted settings retain their freshly fetched vendor values. The supported
+suction values are `quiet`, `auto`, `strong`, and `max`; water levels are `1`,
+`2`, and `3`. An existing `waterPump=0` is preserved when not overridden, but
+is not exposed as an off choice because that meaning is unverified.
 
-`Room.mode` preserves the optional raw `SweepArea.mode` vendor string. Analysis
-of the Android app found carpet-related values such as `mode_big_carpet` and
-`mode_tiny_carpet`; this field is not a verified room sweep/mop selector. The
-deprecated `RoomCleaningMode` compatibility enum and
-`RoomCleaningSettings.mode` field must not be used for new code. Setting
-`RoomCleaningSettings.mode` is rejected rather than writing an unverified value
-to a cleaning request.
+`Room.mode` preserves the optional raw `SweepArea.mode` string. It is a
+carpet-related value, not a verified room sweep/mop selector. New code must not
+use the deprecated `RoomCleaningMode` compatibility enum or
+`RoomCleaningSettings.mode`; attempts to set the latter are rejected.
 
-The Android app also has a separate `SweepStrategy.cleanMode` field with partial
-evidence for mop and sweep values, but its relationship to room-cleaning
-requests has not yet been verified.
+## Status and network information
 
-## Status information
+`RobotStatus` exposes common values such as battery level, robot and charging
+state, fan mode, cleaned area, cleaning time, error code, online state, and raw
+wiping-assembly status. It also carries optional raw diagnostic counters,
+states, map position, heading, timer status, and auto-boost state. Values with
+unknown units or meanings remain raw, and missing fields remain `None`.
 
-Depending on the robot model, status information may include:
-
-- Battery level
-- Robot state
-- Charging state
-- Fan mode
-- Cleaned area in square metres
-- Cleaning time in seconds
-- Error code
-- Online state
-- Wiping assembly status (`mop_status`)
-
-Example:
-
-```text
-Device: 360 Saugroboter
-Model: S9-P
-Battery: 100 %
-State: fullcharge
-Charging: True
-Fan mode: strong
-Cleaned area: 5
-Cleaning time: 157
-Error code: 0
-```
-
-## Network information
-
-The robot can report its current station network identity through the public
-API. Missing vendor fields are returned as `None`, and MAC addresses are
-normalized to lowercase colon-separated form.
+Station network identity is available separately:
 
 ```python
 network_info = await client.get_network_info(robot)
@@ -313,123 +216,60 @@ print(network_info.station_mac)
 print(network_info.station_signal)
 ```
 
-Treat SSIDs as potentially sensitive when displaying or logging
-`network_info.station_ssid`.
+MAC addresses are normalized to lowercase colon-separated form. Treat SSIDs as
+potentially sensitive when displaying or logging `network_info.station_ssid`.
 
-## Session handling
+## Session handling and security
 
-The library distinguishes between the Qihoo account session and the Smart Home session.
-
-Conceptually:
+The authentication chain is:
 
 ```text
-Q + T
-  ↓
-qid
-  ↓
-Smart Home login
-  ↓
-sid + pushKey
-  ↓
-Device communication
+Q + T → qid → Smart Home login → sid + pushKey → device communication
 ```
 
-If the Smart Home SID expires, the library performs one automatic re-authentication attempt using the existing `Q` and `T` tokens.
+If the Smart Home SID expires, the library retries authentication once with the
+current Q/T tokens. If the underlying Qihoo session is invalid, the caller must
+provide fresh credentials. The email/password path obtains Q/T first and then
+uses this same Smart Home login path; the newer signed `/v1` API is not used.
 
-If the underlying Qihoo account session is no longer valid, the caller must provide new `Q` and `T` tokens.
+Treat passwords, captcha codes, Q, T, qid, sid, and push keys as secrets. Never
+include real credentials in bug reports, screenshots, logs, test fixtures, or
+Git commits.
 
-The email/password path first obtains Q/T from QUC and then uses this same
-Smart Home login path. The newer signed `/v1` API is not used.
+## Known limitations
+
+- Only the 360Robot S9-P has been verified with the current control and room
+  functionality.
+- Captcha challenges require interaction by the calling application.
+- Several diagnostic values intentionally remain raw because their physical
+  units or model-independent meanings are not established.
+- Room polygons use vendor map coordinates, and malformed or missing polygons
+  are exposed as `None`.
 
 ## Development
-
-Clone the repository:
 
 ```bash
 git clone https://github.com/placix/python-botslab360.git
 cd python-botslab360
-```
-
-Create a virtual environment:
-
-```bash
 python -m venv .venv
-```
-
-Activate it on Windows:
-
-```powershell
-.\.venv\Scripts\Activate.ps1
-```
-
-Install in editable mode:
-
-```bash
-python -m pip install -e .
-```
-
-Install test dependencies:
-
-```bash
 python -m pip install -e ".[test]"
+python -m pip install build ruff twine
+
+ruff check .
+ruff format --check .
+python -m pytest -p no:cacheprovider
+python -m compileall -q src tests diagnostics
+python -m build
+python -m twine check dist/*
 ```
 
-Run the test suite:
+Activate the virtual environment before installing dependencies when desired.
+Files under `diagnostics/` are development and protocol-verification tools;
+applications should use the public `Botslab360Client` API instead.
 
-```bash
-pytest
-```
+This independent project builds in part on protocol research by
+[TA2k](https://github.com/TA2k) in
+[ioBroker.botslab360](https://github.com/TA2k/ioBroker.botslab360). See
+[ATTRIBUTION.md](ATTRIBUTION.md) for details.
 
-Files under `diagnostics/` are development and protocol-verification tools.
-Normal applications should use the public `Botslab360Client` API instead.
-
-## Project status
-
-The library is currently under active development.
-
-The current focus is providing a clean protocol layer that can later be used by a native Home Assistant integration.
-
-Planned future work may include:
-
-- Additional robot models
-- Persistent push connection
-- Fan speed control
-- Zone cleaning
-- Additional map features
-
-## Security
-
-Authentication and session values must be treated as secrets.
-
-Do not include real credentials in:
-
-- bug reports
-- screenshots
-- logs
-- test fixtures
-- Git commits
-
-## Acknowledgements
-
-`python-botslab360` is an independent Python project and is not affiliated
-with or maintained by TA2k or the ioBroker.botslab360 project.
-
-The headless 360/Botslab QUC authentication flow in this project is based in
-part on protocol research and implementation work by TA2k in
-[ioBroker.botslab360](https://github.com/TA2k/ioBroker.botslab360), in
-particular its
-[`lib/quc.js`](https://github.com/TA2k/ioBroker.botslab360/blob/main/lib/quc.js)
-implementation. Relevant parts of the protocol were additionally verified
-against the decompiled Android application where possible. The Python
-implementation and public API in this project were developed independently.
-
-See [ATTRIBUTION.md](ATTRIBUTION.md) for license and attribution details.
-
-## License
-
-MIT
-
-## Links
-
-- Source: https://github.com/placix/python-botslab360
-- Issues: https://github.com/placix/python-botslab360/issues
+Version `0.7.0` is licensed under the [MIT License](LICENSE).
