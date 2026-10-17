@@ -272,4 +272,4 @@ This independent project builds in part on protocol research by
 [ioBroker.botslab360](https://github.com/TA2k/ioBroker.botslab360). See
 [ATTRIBUTION.md](ATTRIBUTION.md) for details.
 
-Version `0.7.0` is licensed under the [MIT License](LICENSE).
+Version `0.7.1` is licensed under the [MIT License](LICENSE).

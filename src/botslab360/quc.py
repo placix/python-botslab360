@@ -463,6 +463,7 @@ class QucAuth:
         region: str | None,
         identity: DeviceIdentity,
         _profile: QucLoginProfile = BOTSLAB_CLOUD_PROFILE,
+        timeout: float | None = None,
     ) -> None:
         self.validate_options(
             email=email,
@@ -476,6 +477,7 @@ class QucAuth:
         self._region = region
         self._identity = identity
         self._profile = _profile
+        self._request_timeout = timeout
 
     @staticmethod
     def validate_options(
@@ -786,6 +788,11 @@ class QucAuth:
 
     async def _post(self, form: Mapping[str, str]) -> httpx.Response:
         try:
+            request_options = (
+                {}
+                if self._request_timeout is None
+                else {"timeout": self._request_timeout}
+            )
             response = await self._http_client.post(
                 self.url,
                 data=form,
@@ -794,6 +801,7 @@ class QucAuth:
                     "User-Agent": self._profile.user_agent,
                     "Connection": "close",
                 },
+                **request_options,
             )
             response.raise_for_status()
             return response

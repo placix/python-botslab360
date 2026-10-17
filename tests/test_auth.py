@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from unittest.mock import AsyncMock, MagicMock, patch
 from urllib.parse import parse_qs
 from uuid import UUID
 
@@ -150,6 +151,63 @@ def test_authenticate_sends_poc_request_and_parses_string_errno() -> None:
         assert session.qid == QID
         assert session.sid == "synthetic-smart-sid"
         assert session.push_key == "synthetic-push-key"
+
+    run(scenario())
+
+
+def test_injected_http_client_uses_configured_timeout_and_is_not_closed() -> None:
+    async def scenario() -> None:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            assert request.extensions["timeout"] == {
+                "connect": 12.5,
+                "read": 12.5,
+                "write": 12.5,
+                "pool": 12.5,
+            }
+            return httpx.Response(
+                200,
+                json={
+                    "errno": 0,
+                    "data": {
+                        "sid": "synthetic-smart-sid",
+                        "pushKey": "synthetic-push-key",
+                    },
+                },
+            )
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            timeout=99.0,
+        ) as http_client:
+            client = Botslab360Client(
+                Q_RAW,
+                T_RAW,
+                http_client=http_client,
+                timeout=12.5,
+            )
+
+            await client.authenticate()
+            await client.close()
+
+            assert http_client.is_closed is False
+            assert http_client.timeout == httpx.Timeout(99.0)
+
+    run(scenario())
+
+
+def test_internally_owned_http_client_is_closed() -> None:
+    async def scenario() -> None:
+        owned_client = MagicMock(spec=httpx.AsyncClient)
+        owned_client.aclose = AsyncMock()
+        with patch(
+            "botslab360.client.httpx.AsyncClient",
+            return_value=owned_client,
+        ) as client_class:
+            client = Botslab360Client(Q_RAW, T_RAW, timeout=12.5)
+            await client.close()
+
+        client_class.assert_called_once_with(timeout=12.5)
+        owned_client.aclose.assert_awaited_once_with()
 
     run(scenario())
 

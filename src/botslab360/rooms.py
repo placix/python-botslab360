@@ -336,12 +336,17 @@ def prepare_area_setting(
     return gson_json(area_setting)
 
 
-async def _download_map(http_client: httpx.AsyncClient, url: str) -> dict[str, Any]:
+async def _download_map(
+    http_client: httpx.AsyncClient,
+    url: str,
+    *,
+    request_timeout: float,
+) -> dict[str, Any]:
     parsed = urlsplit(url)
     if parsed.scheme not in {"http", "https"} or not parsed.netloc:
         raise ApiError("Map push URL is invalid", phase="protocol")
     try:
-        response = await http_client.get(url)
+        response = await http_client.get(url, timeout=request_timeout)
         response.raise_for_status()
     except httpx.HTTPStatusError as exc:
         raise ApiError(
@@ -361,11 +366,20 @@ async def _map_from_protocol(
     protocol: dict[str, Any],
     *,
     http_client: httpx.AsyncClient,
+    request_timeout: float,
 ) -> dict[str, Any] | None:
     push_url = protocol.get("pushDataUrl")
     if isinstance(push_url, str) and push_url:
-        downloaded = await _download_map(http_client, push_url)
-        return await _map_from_protocol(downloaded, http_client=http_client)
+        downloaded = await _download_map(
+            http_client,
+            push_url,
+            request_timeout=request_timeout,
+        )
+        return await _map_from_protocol(
+            downloaded,
+            http_client=http_client,
+            request_timeout=request_timeout,
+        )
 
     if str(protocol.get("infoType")) == MAP_INFO_TYPE:
         return _json_object(protocol.get("data"), field="MapInfo")
@@ -377,7 +391,11 @@ async def _map_from_protocol(
         return None
     for command in commands:
         if isinstance(command, dict):
-            result = await _map_from_protocol(command, http_client=http_client)
+            result = await _map_from_protocol(
+                command,
+                http_client=http_client,
+                request_timeout=request_timeout,
+            )
             if result is not None:
                 return result
     return None
@@ -388,6 +406,7 @@ async def wait_for_room_map(
     *,
     device_id: str,
     http_client: httpx.AsyncClient,
+    request_timeout: float,
     timeout: float,
 ) -> RoomMap:
     """Wait for the next current MapInfo push for one device."""
@@ -401,7 +420,11 @@ async def wait_for_room_map(
                 protocol = _json_object(event.get("data"), field="protocol")
             except ApiError:
                 continue
-            map_info = await _map_from_protocol(protocol, http_client=http_client)
+            map_info = await _map_from_protocol(
+                protocol,
+                http_client=http_client,
+                request_timeout=request_timeout,
+            )
             if map_info is not None:
                 return parse_room_map(map_info)
 

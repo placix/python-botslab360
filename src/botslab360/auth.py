@@ -162,10 +162,12 @@ class BotslabAuth:
         *,
         base_url: str = SMART_HOME_BASE_URL,
         language: str = "de_DE",
+        timeout: float | None = None,
     ) -> None:
         self._http_client = http_client
         self._base_url = base_url.rstrip("/")
         self._language = language
+        self._request_timeout = timeout
 
     async def login(
         self,
@@ -240,10 +242,16 @@ class BotslabAuth:
         }
 
         try:
+            request_options = (
+                {}
+                if self._request_timeout is None
+                else {"timeout": self._request_timeout}
+            )
             response = await self._http_client.post(
                 f"{self._base_url}{SMART_LOGIN_PATH}",
                 data=form,
                 headers=headers,
+                **request_options,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:

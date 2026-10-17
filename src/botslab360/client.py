@@ -205,7 +205,12 @@ class Botslab360Client:
         push_heartbeat_timeout: int,
         push_heartbeat_interval: float,
     ) -> None:
-        self._http_client = http_client or httpx.AsyncClient(timeout=timeout)
+        self._request_timeout = timeout
+        self._http_client = (
+            http_client
+            if http_client is not None
+            else httpx.AsyncClient(timeout=timeout)
+        )
         self._owns_http_client = http_client is None
         self._base_url = base_url.rstrip("/")
         self._language = language
@@ -218,6 +223,7 @@ class Botslab360Client:
             self._http_client,
             base_url=base_url,
             language=language,
+            timeout=timeout,
         )
         self._session: SmartSession | None = None
 
@@ -289,6 +295,7 @@ class Botslab360Client:
             region=resolved_region,
             identity=identity,
             _profile=profile,
+            timeout=timeout,
         )
         return client
 
@@ -420,6 +427,7 @@ class Botslab360Client:
                 f"{self._base_url}{DEVICE_LIST_PATH}",
                 data=form,
                 headers=headers,
+                timeout=self._request_timeout,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -702,6 +710,7 @@ class Botslab360Client:
                     push,
                     device_id=device_id,
                     http_client=self._http_client,
+                    request_timeout=self._request_timeout,
                     timeout=timeout,
                 )
             )
@@ -762,6 +771,7 @@ class Botslab360Client:
                 f"{self._base_url}{ROOM_CLEANING_PATH}",
                 data=form,
                 headers=headers,
+                timeout=self._request_timeout,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
@@ -922,6 +932,7 @@ class Botslab360Client:
                 f"{self._base_url}{COMMAND_PATH}",
                 data=form,
                 headers=headers,
+                timeout=self._request_timeout,
             )
             response.raise_for_status()
         except httpx.HTTPStatusError as exc:
