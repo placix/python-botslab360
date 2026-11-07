@@ -5,8 +5,10 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from collections.abc import Awaitable, Callable, Mapping
-from contextlib import suppress
+import logging
+from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
+from contextlib import AsyncExitStack, asynccontextmanager, suppress
+from dataclasses import dataclass
 from numbers import Integral
 from typing import Any, TypeVar
 from urllib.parse import quote_plus
@@ -71,6 +73,27 @@ ANDROID_DEVICE_MANUFACTURER = "Google"
 ANDROID_DEVICE_MODEL = "sdk_gphone64_x86_64"
 ANDROID_ROOM_USER_AGENT = "okhttp/4.10.0"
 _ResultT = TypeVar("_ResultT")
+_LOGGER = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class _PushProfile:
+    """Transport settings for one initial push registration attempt."""
+
+    name: str
+    port: int
+    client_version: str
+    heartbeat_timeout: int
+    heartbeat_interval: float
+
+
+_LEGACY_PUSH_PROFILE = _PushProfile(
+    "legacy",
+    DEFAULT_PUSH_PORT,
+    DEFAULT_PUSH_CLIENT_VERSION,
+    DEFAULT_PUSH_HEARTBEAT_TIMEOUT,
+    DEFAULT_PUSH_HEARTBEAT_INTERVAL,
+)
 
 
 def _numeric_api_code(value: Any, *, status_code: int) -> int:
@@ -204,6 +227,7 @@ class Botslab360Client:
         push_client_version: str,
         push_heartbeat_timeout: int,
         push_heartbeat_interval: float,
+        push_profile_name: str = "legacy",
     ) -> None:
         self._request_timeout = timeout
         self._http_client = (
@@ -219,6 +243,15 @@ class Botslab360Client:
         self._push_client_version = push_client_version
         self._push_heartbeat_timeout = push_heartbeat_timeout
         self._push_heartbeat_interval = push_heartbeat_interval
+        self._push_profiles = (
+            _PushProfile(
+                push_profile_name,
+                push_port,
+                push_client_version,
+                push_heartbeat_timeout,
+                push_heartbeat_interval,
+            ),
+        )
         self._auth = BotslabAuth(
             self._http_client,
             base_url=base_url,
@@ -282,7 +315,13 @@ class Botslab360Client:
             push_client_version=push_client_version,
             push_heartbeat_timeout=push_heartbeat_timeout,
             push_heartbeat_interval=push_heartbeat_interval,
+            push_profile_name="android"
+            if backend is AuthBackend.ROBOT360
+            else "legacy",
         )
+        # An explicit port override remains authoritative; do not redirect it.
+        if backend is AuthBackend.ROBOT360 and push_port is None:
+            client._push_profiles += (_LEGACY_PUSH_PROFILE,)
         identity = device_identity or DeviceIdentity.generate()
         client._credentials = None
         client._account_fingerprint = None
@@ -528,6 +567,52 @@ class Botslab360Client:
             )
         )
 
+    @asynccontextmanager
+    async def _push_connection(self) -> AsyncIterator[PushClient]:
+        """Try alternate profiles only before yielding an established channel."""
+
+        if self._session is None:
+            raise AuthenticationError(
+                "Authentication is required before opening push",
+                phase="authentication",
+            )
+        for index, profile in enumerate(self._push_profiles):
+            push = PushClient(
+                self._session.sid,
+                self._session.push_key,
+                host=self._push_host,
+                port=profile.port,
+                client_version=profile.client_version,
+                heartbeat_timeout=profile.heartbeat_timeout,
+                heartbeat_interval=profile.heartbeat_interval,
+            )
+            async with AsyncExitStack() as stack:
+                try:
+                    await stack.enter_async_context(push)
+                except ApiError as error:
+                    # Failed __aenter__ calls do not register an exit callback.
+                    await push.close()
+                    retry = (
+                        not isinstance(
+                            error, (AuthenticationError, InvalidSessionError)
+                        )
+                        and error.phase in {"transport", "timeout", "protocol"}
+                        and index + 1 < len(self._push_profiles)
+                    )
+                    _LOGGER.debug(
+                        "Push setup: profile=%s result=failed fallback=%s",
+                        profile.name,
+                        retry,
+                    )
+                    if not retry:
+                        raise
+                    continue
+                _LOGGER.debug("Push setup: profile=%s result=succeeded", profile.name)
+                # The operation runs outside the establishment exception handler:
+                # no profile retry can replay a command or a map trigger.
+                yield push
+                return
+
     async def _get_status_once(
         self,
         *,
@@ -541,16 +626,7 @@ class Botslab360Client:
                 phase="authentication",
             )
 
-        push = PushClient(
-            self._session.sid,
-            self._session.push_key,
-            host=self._push_host,
-            port=self._push_port,
-            client_version=self._push_client_version,
-            heartbeat_timeout=self._push_heartbeat_timeout,
-            heartbeat_interval=self._push_heartbeat_interval,
-        )
-        async with push:
+        async with self._push_connection() as push:
             await self._request_status(device_id=device_id, task_id=task_id)
             return await push.wait_for_status(
                 device_id=device_id,
@@ -603,16 +679,7 @@ class Botslab360Client:
                 phase="authentication",
             )
 
-        push = PushClient(
-            self._session.sid,
-            self._session.push_key,
-            host=self._push_host,
-            port=self._push_port,
-            client_version=self._push_client_version,
-            heartbeat_timeout=self._push_heartbeat_timeout,
-            heartbeat_interval=self._push_heartbeat_interval,
-        )
-        async with push:
+        async with self._push_connection() as push:
             await self._post_robot_request(
                 device_id=device_id,
                 info_type=NETWORK_INFO_TYPE,
@@ -695,16 +762,7 @@ class Botslab360Client:
                 "Authentication is required before requesting rooms",
                 phase="authentication",
             )
-        push = PushClient(
-            self._session.sid,
-            self._session.push_key,
-            host=self._push_host,
-            port=self._push_port,
-            client_version=self._push_client_version,
-            heartbeat_timeout=self._push_heartbeat_timeout,
-            heartbeat_interval=self._push_heartbeat_interval,
-        )
-        async with push:
+        async with self._push_connection() as push:
             waiter = asyncio.create_task(
                 wait_for_room_map(
                     push,
