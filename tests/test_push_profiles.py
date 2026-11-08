@@ -313,3 +313,220 @@ def _check_setup_error(
         assert closed == expected_ports
 
     asyncio.run(run())
+
+
+@pytest.mark.parametrize(
+    ("plans", "late_failures", "preferred_ports"),
+    [
+        pytest.param(
+            [[(80, True)], [(80, True)]],
+            [False, False],
+            [80, 80],
+            id="android-stays-preferred",
+        ),
+        pytest.param(
+            [[(80, False), (443, True)], [(443, True)]],
+            [False, False],
+            [443, 443],
+            id="legacy-promoted",
+        ),
+        pytest.param(
+            [[(80, False), (443, True)], [(443, False), (80, True)], [(80, True)]],
+            [False, False, False],
+            [443, 80, 80],
+            id="android-promoted-again",
+        ),
+        pytest.param(
+            [[(80, False), (443, False)], [(80, True)]],
+            [False, False],
+            [80, 80],
+            id="both-fail-no-promotion",
+        ),
+        pytest.param(
+            [[(80, False), (443, True)], [(443, False), (80, False)], [(443, True)]],
+            [False, False, False],
+            [443, 443, 443],
+            id="both-fail-preserve-legacy",
+        ),
+        pytest.param(
+            [[(80, False), (443, True)], [(443, True)]],
+            [True, False],
+            [443, 443],
+            id="late-operation-error-no-replay",
+        ),
+    ],
+)
+def test_successful_profile_is_preferred_for_later_operations(
+    monkeypatch, caplog, plans, late_failures, preferred_ports
+):
+    async def run():
+        script = iter(attempt for plan in plans for attempt in plan)
+        pushes = []
+        errors = []
+        requests = []
+        late_failure = False
+
+        class ScriptedPush:
+            def __init__(self, sid, push_key, **kwargs):
+                self.port = kwargs["port"]
+                self.closed = False
+                pushes.append(self)
+
+            async def __aenter__(self):
+                expected_port, success = next(script)
+                assert self.port == expected_port
+                if not success:
+                    error = ApiError("synthetic-private-setup-error", phase="transport")
+                    errors.append(error)
+                    raise error
+                return self
+
+            async def close(self):
+                self.closed = True
+
+            async def __aexit__(self, *args):
+                await self.close()
+
+            async def wait_for_status(self, **kwargs):
+                if late_failure:
+                    raise ApiError(
+                        "synthetic-private-operation-error", phase="transport"
+                    )
+                return RobotStatus(DEVICE_ID, True, 80, "idle", False, "auto", 0, 0, 0)
+
+        monkeypatch.setattr(client_module, "PushClient", ScriptedPush)
+
+        async def handler(request):
+            assert request.url.path == "/clean/cmd/send"
+            requests.append(request)
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = make_client(http)
+            original_profiles = client._push_profiles
+            expected_requests = 0
+            for plan, late_failure, preferred_port in zip(
+                plans, late_failures, preferred_ports
+            ):
+                established = any(success for _, success in plan)
+                expected_requests += int(established)
+                if not established or late_failure:
+                    with pytest.raises(ApiError) as raised:
+                        await client.get_status(DEVICE_ID)
+                    if not established:
+                        assert raised.value is errors[-1]
+                else:
+                    assert (await client.get_status(DEVICE_ID)).state == "idle"
+                assert len(requests) == expected_requests
+                assert client._preferred_push_profile.port == preferred_port
+                assert client._push_profiles is original_profiles
+                assert any(
+                    client._preferred_push_profile is profile
+                    for profile in original_profiles
+                )
+                assert all(push.closed for push in pushes)
+            assert len(pushes) == sum(len(plan) for plan in plans)
+            # Preference is client-local and is not carried into a fresh client.
+            fresh_client = make_client(http)
+            assert fresh_client._preferred_push_profile.port == 80
+            await fresh_client.close()
+            await client.close()
+            assert not http.is_closed
+
+    caplog.set_level(logging.DEBUG, logger="botslab360.client")
+    asyncio.run(run())
+    diagnostics = "\n".join(
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "botslab360.client"
+    )
+    assert "synthetic-private" not in diagnostics
+    if plans == [[(80, False), (443, True)], [(443, True)]]:
+        assert diagnostics.splitlines() == [
+            "Push setup: profile=android result=failed fallback=True",
+            "Push setup: profile=legacy result=succeeded",
+            "Push setup: profile=legacy result=succeeded",
+        ]
+
+
+@pytest.mark.parametrize("second_android_fails", [False, True])
+def test_concurrent_operations_keep_independent_attempt_order(
+    monkeypatch, second_android_fails
+):
+    async def run():
+        a_started = asyncio.Event()
+        b_started = asyncio.Event()
+        a_legacy_started = asyncio.Event()
+        release_a = asyncio.Event()
+        release_b = asyncio.Event()
+        history = {"a": [], "b": [], "next": []}
+        pushes = []
+        requests = []
+
+        class ConcurrentPush:
+            def __init__(self, sid, push_key, **kwargs):
+                name = asyncio.current_task().get_name()
+                self.name = name if name in {"a", "b"} else "next"
+                self.port = kwargs["port"]
+                self.closed = False
+                history[self.name].append(self.port)
+                pushes.append(self)
+
+            async def __aenter__(self):
+                if self.name == "a" and self.port == 80:
+                    a_started.set()
+                    await release_a.wait()
+                    raise ApiError("synthetic-a-setup-error", phase="transport")
+                if self.name == "a":
+                    a_legacy_started.set()
+                if self.name == "b" and self.port == 80:
+                    b_started.set()
+                    await release_b.wait()
+                    if second_android_fails:
+                        raise ApiError("synthetic-b-setup-error", phase="transport")
+                return self
+
+            async def close(self):
+                self.closed = True
+
+            async def __aexit__(self, *args):
+                await self.close()
+
+            async def wait_for_status(self, **kwargs):
+                return RobotStatus(DEVICE_ID, True, 80, "idle", False, "auto", 0, 0, 0)
+
+        monkeypatch.setattr(client_module, "PushClient", ConcurrentPush)
+
+        async def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = make_client(http)
+            profiles = client._push_profiles
+            a = asyncio.create_task(client.get_status(DEVICE_ID), name="a")
+            await a_started.wait()
+            b = asyncio.create_task(client.get_status(DEVICE_ID), name="b")
+            await b_started.wait()
+            release_a.set()
+            await a_legacy_started.wait()
+            await a
+            assert client._preferred_push_profile is profiles[1]
+            # b captured Android first before a promoted Legacy. Its remaining
+            # attempts must not be changed or skipped by that promotion.
+            release_b.set()
+            await b
+            preferred = profiles[1] if second_android_fails else profiles[0]
+            assert client._preferred_push_profile is preferred
+            await client.get_status(DEVICE_ID)
+            assert history == {
+                "a": [80, 443],
+                "b": [80, 443] if second_android_fails else [80],
+                "next": [preferred.port],
+            }
+            assert client._push_profiles is profiles
+            assert all(push.closed for push in pushes)
+            assert len(requests) == 3
+            await client.close()
+
+    asyncio.run(asyncio.wait_for(run(), timeout=5))

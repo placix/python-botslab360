@@ -252,6 +252,7 @@ class Botslab360Client:
                 push_heartbeat_interval,
             ),
         )
+        self._preferred_push_profile = self._push_profiles[0]
         self._auth = BotslabAuth(
             self._http_client,
             base_url=base_url,
@@ -576,7 +577,13 @@ class Botslab360Client:
                 "Authentication is required before opening push",
                 phase="authentication",
             )
-        for index, profile in enumerate(self._push_profiles):
+        # Snapshot the order before awaiting: concurrent connections keep their
+        # own attempts, while the last successful registration sets preference.
+        preferred = self._preferred_push_profile
+        profiles = (preferred,) + tuple(
+            profile for profile in self._push_profiles if profile is not preferred
+        )
+        for index, profile in enumerate(profiles):
             push = PushClient(
                 self._session.sid,
                 self._session.push_key,
@@ -597,7 +604,7 @@ class Botslab360Client:
                             error, (AuthenticationError, InvalidSessionError)
                         )
                         and error.phase in {"transport", "timeout", "protocol"}
-                        and index + 1 < len(self._push_profiles)
+                        and index + 1 < len(profiles)
                     )
                     _LOGGER.debug(
                         "Push setup: profile=%s result=failed fallback=%s",
@@ -607,6 +614,8 @@ class Botslab360Client:
                     if not retry:
                         raise
                     continue
+                # One reference assignment, without an await or tuple mutation.
+                self._preferred_push_profile = profile
                 _LOGGER.debug("Push setup: profile=%s result=succeeded", profile.name)
                 # The operation runs outside the establishment exception handler:
                 # no profile retry can replay a command or a map trigger.
