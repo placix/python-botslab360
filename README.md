@@ -24,6 +24,7 @@ custom integration.
 - station network-information retrieval;
 - TCP/push communication and AES decryption of push messages;
 - room discovery from the current robot map;
+- occupancy-grid retrieval from the current robot map;
 - single-room and multi-room cleaning;
 - start, pause, resume, return-to-dock, locate, and mop-only controls.
 
@@ -207,6 +208,43 @@ carpet-related value, not a verified room sweep/mop selector. New code must not
 use the deprecated `RoomCleaningMode` compatibility enum or
 `RoomCleaningSettings.mode`; attempts to set the latter are rejected.
 
+## Occupancy grid
+
+`get_occupancy_grid()` uses the same current-map request as `get_rooms()` and
+returns the decoded grid as a typed `OccupancyGrid`:
+
+```python
+from botslab360 import GRID_CELL_FREE, GRID_CELL_OCCUPIED
+
+grid = await client.get_occupancy_grid(robot)
+
+print(grid.width, grid.height, grid.resolution, grid.x_min, grid.y_min)
+row, col = 10, 20
+cell = grid.cells[row * grid.width + col]
+print(grid.dock, grid.room_segmentation)
+```
+
+- `cells` has `width * height` bytes in row-major order. The geometry fields
+  are passed through from MapInfo without conversion.
+- Observed on a 360 S6 (checked against the vendor app): row 0 is at `y_min`
+  and column 0 at `x_min`, in metres; one cell is `resolution` metres; and
+  `dock` (`chargeHandlePos`) uses the same millimetre frame as the status
+  position. `dock` is `None` when the field is absent or empty.
+- Cell values observed on the 360 S6 are `GRID_CELL_FREE` (255),
+  `GRID_CELL_OCCUPIED` (0) and `GRID_CELL_UNKNOWN` (127). Other values are
+  passed through as they are.
+- `room_segmentation` is `False` only for the recognized map structure without
+  room segmentation (the one for which `get_rooms()` returns `[]`). `True`
+  means "not known to be unsegmented": a room-capable map with no rooms yet
+  reports `True`, so callers can tell the two cases apart.
+
+The grid arrives as Base64 text of one raw LZ4 block. The decoder is bounded by
+the declared `width * height` (at most 4,000,000 cells) and validates `mapId`,
+dimensions, resolution, origin, Base64, `lz4_len` and the dock position. Invalid
+maps raise `ApiError` with `phase="protocol"`; a map with no grid fields at all
+raises `ApiError` with `phase="unsupported"`. Rendering, orientation and
+caching are left to the caller.
+
 ## Status and network information
 
 `RobotStatus` exposes common values such as battery level, robot and charging
@@ -254,6 +292,7 @@ Git commits.
   units or model-independent meanings are not established.
 - Room polygons use vendor map coordinates, and malformed or missing polygons
   are exposed as `None`.
+- The occupancy grid has been verified only on a 360 S6.
 
 ## Development
 

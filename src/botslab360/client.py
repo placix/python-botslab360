@@ -33,12 +33,14 @@ from .exceptions import (
     InvalidSessionError,
     UnsupportedRoomMapError,
 )
+from .grid import parse_occupancy_grid
 from .models import (
     AuthBackend,
     CaptchaChallenge,
     Device,
     DeviceIdentity,
     NetworkInfo,
+    OccupancyGrid,
     QihooCredentials,
     RobotStatus,
     Room,
@@ -66,8 +68,9 @@ from .rooms import (
     ROOM_CLEANING_PATH,
     RoomMap,
     normalize_room_settings,
+    parse_room_map,
     prepare_area_setting,
-    wait_for_room_map,
+    wait_for_map_info,
 )
 
 DEVICE_LIST_PATH = "/common/dev/GetList"
@@ -665,6 +668,26 @@ class Botslab360Client:
             return []
         return list(room_map.rooms)
 
+    async def get_occupancy_grid(
+        self,
+        device: Device | str,
+        *,
+        timeout: float = 30.0,
+    ) -> OccupancyGrid:
+        """Return the occupancy grid from the robot's current map."""
+
+        device_id = _device_id(device)
+        map_info = await self._with_session_refresh(
+            lambda: self._get_map_info_once(
+                device_id=device_id,
+                timeout=timeout,
+                operation="occupancy grid request",
+                description="map",
+                subject="the map",
+            )
+        )
+        return parse_occupancy_grid(map_info)
+
     async def get_network_info(
         self,
         device: Device | str,
@@ -774,19 +797,38 @@ class Botslab360Client:
         device_id: str,
         timeout: float,
     ) -> RoomMap:
+        map_info = await self._get_map_info_once(
+            device_id=device_id,
+            timeout=timeout,
+            operation="room map request",
+            description="room map",
+            subject="rooms",
+        )
+        return parse_room_map(map_info)
+
+    async def _get_map_info_once(
+        self,
+        *,
+        device_id: str,
+        timeout: float,
+        operation: str,
+        description: str,
+        subject: str,
+    ) -> dict[str, Any]:
         if self._session is None:
             raise AuthenticationError(
-                "Authentication is required before requesting rooms",
+                f"Authentication is required before requesting {subject}",
                 phase="authentication",
             )
         async with self._push_connection() as push:
             waiter = asyncio.create_task(
-                wait_for_room_map(
+                wait_for_map_info(
                     push,
                     device_id=device_id,
                     http_client=self._http_client,
                     request_timeout=self._request_timeout,
                     timeout=timeout,
+                    description=description,
                 )
             )
             await asyncio.sleep(0)
@@ -796,7 +838,7 @@ class Botslab360Client:
                     info_type=COMPOSITE_INFO_TYPE,
                     data=json.dumps(LOAD_DATA, separators=(",", ":")),
                     task_id=str(uuid4()),
-                    operation="room map request",
+                    operation=operation,
                 )
                 return await waiter
             finally:

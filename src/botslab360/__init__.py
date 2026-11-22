@@ -12,12 +12,16 @@ from .exceptions import (
     UnsupportedRoomMapError,
 )
 from .models import (
+    GRID_CELL_FREE,
+    GRID_CELL_OCCUPIED,
+    GRID_CELL_UNKNOWN,
     ROOM_CLEAN_TIMES,
     AuthBackend,
     CaptchaChallenge,
     Device,
     DeviceIdentity,
     NetworkInfo,
+    OccupancyGrid,
     QihooCredentials,
     RobotStatus,
     Room,
@@ -29,6 +33,9 @@ from .models import (
 )
 
 __all__ = [
+    "GRID_CELL_FREE",
+    "GRID_CELL_OCCUPIED",
+    "GRID_CELL_UNKNOWN",
     "ROOM_CLEAN_TIMES",
     "ApiError",
     "AuthBackend",
@@ -42,6 +49,7 @@ __all__ = [
     "DeviceIdentity",
     "InvalidSessionError",
     "NetworkInfo",
+    "OccupancyGrid",
     "QihooCredentials",
     "QucAuthenticationError",
     "RobotStatus",

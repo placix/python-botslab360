@@ -246,6 +246,23 @@ def gson_json(value: object) -> str:
     )
 
 
+def has_room_segmentation(map_payload: dict[str, Any]) -> bool:
+    """Return False only for the recognized MapInfo without room segmentation.
+
+    That structure has no cleanId, no smartArea and an empty area list. True
+    means "not known to be unsegmented": a room-capable map with no rooms yet
+    still carries cleanId or smartArea, while a malformed map is also True and
+    is rejected later by parse_room_map().
+    """
+
+    return not (
+        "cleanId" not in map_payload
+        and "smartArea" not in map_payload
+        and isinstance(map_payload.get("area"), list)
+        and not map_payload["area"]
+    )
+
+
 def parse_room_map(map_info: object) -> RoomMap:
     """Parse a current MapInfo payload into public rooms and request state."""
 
@@ -254,12 +271,7 @@ def parse_room_map(map_info: object) -> RoomMap:
     clean_id = map_payload.get("cleanId")
     if isinstance(map_id, bool) or not isinstance(map_id, int):
         raise ApiError("MapInfo is missing a valid mapId", phase="protocol")
-    if (
-        "cleanId" not in map_payload
-        and "smartArea" not in map_payload
-        and isinstance(map_payload.get("area"), list)
-        and not map_payload["area"]
-    ):
+    if not has_room_segmentation(map_payload):
         raise UnsupportedRoomMapError(
             "The current map does not support room segmentation", phase="unsupported"
         )
@@ -423,17 +435,18 @@ async def _map_from_protocol(
     return None
 
 
-async def wait_for_room_map(
+async def wait_for_map_info(
     push: PushClient,
     *,
     device_id: str,
     http_client: httpx.AsyncClient,
     request_timeout: float,
     timeout: float,
-) -> RoomMap:
+    description: str = "map",
+) -> dict[str, Any]:
     """Wait for the next current MapInfo push for one device."""
 
-    async def wait() -> RoomMap:
+    async def wait() -> dict[str, Any]:
         while True:
             event = await push.read_event()
             if event.get("sn") != device_id:
@@ -448,12 +461,33 @@ async def wait_for_room_map(
                 request_timeout=request_timeout,
             )
             if map_info is not None:
-                return parse_room_map(map_info)
+                return map_info
 
     try:
         return await asyncio.wait_for(wait(), timeout=timeout)
     except asyncio.TimeoutError as exc:
         raise ApiError(
-            "Timed out waiting for current room map",
+            f"Timed out waiting for current {description}",
             phase="timeout",
         ) from exc
+
+
+async def wait_for_room_map(
+    push: PushClient,
+    *,
+    device_id: str,
+    http_client: httpx.AsyncClient,
+    request_timeout: float,
+    timeout: float,
+) -> RoomMap:
+    """Wait for the next current MapInfo push and parse its rooms."""
+
+    map_info = await wait_for_map_info(
+        push,
+        device_id=device_id,
+        http_client=http_client,
+        request_timeout=request_timeout,
+        timeout=timeout,
+        description="room map",
+    )
+    return parse_room_map(map_info)

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from uuid import UUID, uuid4
 
@@ -127,6 +127,36 @@ class Room:
     water_pump: int | None
     vertices: tuple[tuple[int, int], ...] | None = None
     mode: str | None = None
+
+
+# Cell values observed in the occupancy grid of a 360 S6. Other values may occur
+# on other models and are kept as they are.
+GRID_CELL_OCCUPIED = 0
+GRID_CELL_UNKNOWN = 127
+GRID_CELL_FREE = 255
+
+
+@dataclass(frozen=True, slots=True)
+class OccupancyGrid:
+    """Occupancy grid from the robot's current map.
+
+    ``cells`` holds ``width * height`` bytes in row-major order. The geometry
+    fields are passed through from MapInfo. On a 360 S6, row 0 is at ``y_min``
+    and column 0 at ``x_min`` (metres), one cell is ``resolution`` metres, and
+    ``dock`` uses the same millimetre frame as the status position.
+    ``room_segmentation`` is False only for the recognized map structure
+    without room segmentation; True means it is not known to be unsegmented.
+    """
+
+    map_id: int
+    width: int
+    height: int
+    resolution: float
+    x_min: float
+    y_min: float
+    cells: bytes = field(repr=False)
+    dock: tuple[int, int] | None
+    room_segmentation: bool
 
 
 class RoomFanMode(str, Enum):
