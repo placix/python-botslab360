@@ -27,7 +27,12 @@ from .commands import (
     START_CLEANING,
     CommandSpec,
 )
-from .exceptions import ApiError, AuthenticationError, InvalidSessionError
+from .exceptions import (
+    ApiError,
+    AuthenticationError,
+    InvalidSessionError,
+    UnsupportedRoomMapError,
+)
 from .models import (
     AuthBackend,
     CaptchaChallenge,
@@ -649,12 +654,15 @@ class Botslab360Client:
         *,
         timeout: float = 30.0,
     ) -> list[Room]:
-        """Return rooms from a freshly requested smart-area map."""
+        """Return current rooms, or [] for a recognized unsegmented map."""
 
         device_id = _device_id(device)
-        room_map = await self._with_session_refresh(
-            lambda: self._get_room_map_once(device_id=device_id, timeout=timeout)
-        )
+        try:
+            room_map = await self._with_session_refresh(
+                lambda: self._get_room_map_once(device_id=device_id, timeout=timeout)
+            )
+        except UnsupportedRoomMapError:
+            return []
         return list(room_map.rooms)
 
     async def get_network_info(

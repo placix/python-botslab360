@@ -105,3 +105,7 @@ class CaptchaRequired(QucAuthenticationError):
 
 class InvalidSessionError(ApiError):
     """The Smart Home SID has expired and must be obtained again."""
+
+
+class UnsupportedRoomMapError(ApiError):
+    """The current map explicitly exposes no room-segmentation capability."""

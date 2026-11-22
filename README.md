@@ -169,6 +169,15 @@ for room in rooms:
 await client.clean_rooms(robot, [1, 6])
 ```
 
+`get_rooms()` returns `[]` for the recognized map structure without room
+segmentation: an integer `mapId`, absent `cleanId` and `smartArea`, and an empty
+`area` list. This is a capability difference, not a connection failure.
+Malformed maps, authentication errors and transport failures still raise errors.
+Calling `clean_rooms()` on that structure raises the public
+`UnsupportedRoomMapError` (an `ApiError` subclass with `phase="unsupported"`)
+without sending a room-cleaning command. Room-capable maps still require a valid
+`cleanId`.
+
 Verified per-run settings can override pass count, suction, and water level for
 selected rooms:
 

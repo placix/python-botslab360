@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import httpx
 
-from .exceptions import ApiError
+from .exceptions import ApiError, UnsupportedRoomMapError
 from .models import (
     ROOM_CLEAN_TIMES,
     Room,
@@ -254,10 +254,32 @@ def parse_room_map(map_info: object) -> RoomMap:
     clean_id = map_payload.get("cleanId")
     if isinstance(map_id, bool) or not isinstance(map_id, int):
         raise ApiError("MapInfo is missing a valid mapId", phase="protocol")
+    if (
+        "cleanId" not in map_payload
+        and "smartArea" not in map_payload
+        and isinstance(map_payload.get("area"), list)
+        and not map_payload["area"]
+    ):
+        raise UnsupportedRoomMapError(
+            "The current map does not support room segmentation", phase="unsupported"
+        )
     if not isinstance(clean_id, str) or not clean_id:
         raise ApiError("MapInfo is missing a valid cleanId", phase="protocol")
 
     smart_area = _json_object(map_payload.get("smartArea"), field="smartArea")
+    # Validate incoming structure before Gson defaults can replace invalid IDs
+    # with zero or silently discard corrupted room definitions.
+    raw_areas = smart_area.get("value")
+    if not isinstance(raw_areas, list):
+        raise ApiError("smartArea is missing room definitions", phase="protocol")
+    for raw_area in raw_areas:
+        if not isinstance(raw_area, dict):
+            raise ApiError(
+                "smartArea contains an invalid room definition", phase="protocol"
+            )
+        room_id = raw_area.get("id")
+        if isinstance(room_id, bool) or not isinstance(room_id, int):
+            raise ApiError("smartArea contains an invalid room id", phase="protocol")
     area_setting = gson_sweep_area_list(smart_area)
     if area_setting is None or not isinstance(area_setting.get("value"), list):
         raise ApiError("smartArea is missing room definitions", phase="protocol")

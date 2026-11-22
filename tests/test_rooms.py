@@ -13,6 +13,7 @@ import botslab360.client as client_module
 from botslab360 import (
     ROOM_CLEAN_TIMES,
     ApiError,
+    AuthenticationError,
     Botslab360Client,
     Device,
     InvalidSessionError,
@@ -22,6 +23,7 @@ from botslab360 import (
     RoomFanMode,
     RoomWaterLevel,
     SmartSession,
+    UnsupportedRoomMapError,
 )
 from botslab360.rooms import (
     parse_room_map,
@@ -131,6 +133,151 @@ def authenticated_client(http_client: httpx.AsyncClient) -> Botslab360Client:
         push_key="synthetic-push-key",
     )
     return client
+
+
+@pytest.mark.parametrize("as_json", [False, True])
+def test_unsegmented_map_has_specific_unsupported_error(as_json) -> None:
+    payload = {"mapId": 1, "area": []}
+    with pytest.raises(UnsupportedRoomMapError) as raised:
+        parse_room_map(json.dumps(payload) if as_json else payload)
+    assert isinstance(raised.value, ApiError)
+    assert raised.value.phase == "unsupported"
+
+
+@pytest.mark.parametrize("operation", ["get_rooms", "clean_rooms"])
+def test_unsegmented_map_is_empty_only_for_discovery(monkeypatch, operation) -> None:
+    async def scenario():
+        FakePushClient.events = [map_event({"mapId": 1, "area": []})]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        requests = []
+
+        async def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = authenticated_client(http)
+            if operation == "get_rooms":
+                # DEVICE deliberately has a different model; only payload shape matters.
+                assert await client.get_rooms(DEVICE, timeout=1) == []
+            else:
+                with pytest.raises(UnsupportedRoomMapError) as raised:
+                    await client.clean_rooms(DEVICE, [1], timeout=1)
+                assert raised.value.phase == "unsupported"
+        assert len(requests) == 1
+        assert requests[0].url.path == "/clean/cmd/send"
+        assert parse_qs(requests[0].content.decode())["infoType"] == ["30000"]
+        assert len(FakePushClient.instances) == 1
+        assert FakePushClient.instances[0].closed
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"area": []},
+        *({"mapId": value, "area": []} for value in (None, True, "1", 1.5, [])),
+        {"mapId": 1},
+        *({"mapId": 1, "area": value} for value in (None, {}, "[]", [{}])),
+        *({"mapId": 1, "area": [], "cleanId": value} for value in (None, 123, "")),
+        *(
+            {"mapId": 1, "area": [], "smartArea": value}
+            for value in (None, {}, [], "{}")
+        ),
+        {**map_info(), "cleanId": ""},
+        *(
+            {**map_info(), "smartArea": value}
+            for value in (None, [], "broken-json", {})
+        ),
+        *(
+            {**map_info(), "smartArea": {"value": value}}
+            for value in (None, {}, "[]", [None], [1], [{}])
+        ),
+        *(
+            {**map_info(), "smartArea": {"value": [{"id": value}]}}
+            for value in (None, True, "1", 1.5)
+        ),
+        {**map_info(), "smartArea": {"value": [{"id": 1}, {"id": 1}]}},
+        "broken-json",
+        [],
+    ],
+)
+def test_malformed_room_map_is_not_treated_as_unsupported(monkeypatch, payload) -> None:
+    async def scenario():
+        FakePushClient.events = [map_event(payload)]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"errno": 0})
+            )
+        ) as http:
+            with pytest.raises(ApiError) as raised:
+                await authenticated_client(http).get_rooms(DEVICE, timeout=1)
+        assert not isinstance(raised.value, UnsupportedRoomMapError)
+        assert raised.value.phase == "protocol"
+        assert FakePushClient.instances[0].closed
+
+    run(scenario())
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        ApiError("synthetic transport failure", phase="transport"),
+        ApiError("synthetic timeout", phase="timeout"),
+        AuthenticationError("synthetic auth failure"),
+    ],
+)
+def test_room_discovery_failures_are_not_empty_rooms(monkeypatch, error) -> None:
+    async def scenario():
+        class FailedPush(FakePushClient):
+            async def read_event(self):
+                raise error
+
+        FailedPush.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FailedPush)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"errno": 0})
+            )
+        ) as http:
+            with pytest.raises(type(error)) as raised:
+                await authenticated_client(http).get_rooms(DEVICE, timeout=1)
+            assert raised.value is error
+        assert FailedPush.instances[0].closed
+
+    run(scenario())
+
+
+def test_no_room_robot_does_not_block_other_robots(monkeypatch) -> None:
+    async def scenario():
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        second = Device(
+            id="second-synthetic-device",
+            name="Second",
+            model="Room-capable",
+            online=True,
+        )
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"errno": 0})
+            )
+        ) as http:
+            client = authenticated_client(http)
+            FakePushClient.events = [map_event({"mapId": 1, "area": []})]
+            assert await client.get_rooms(DEVICE, timeout=1) == []
+            FakePushClient.events = [{**map_event(), "sn": second.id}]
+            rooms = await client.get_rooms(second, timeout=1)
+            assert len(rooms) == 10
+            assert rooms[1].id == 1
+        assert len(FakePushClient.instances) == 2
+        assert all(push.closed for push in FakePushClient.instances)
+
+    run(scenario())
 
 
 def test_map_info_parses_ten_public_rooms() -> None:

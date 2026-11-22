@@ -9,6 +9,7 @@ from .exceptions import (
     CaptchaRequired,
     InvalidSessionError,
     QucAuthenticationError,
+    UnsupportedRoomMapError,
 )
 from .models import (
     ROOM_CLEAN_TIMES,
@@ -50,6 +51,7 @@ __all__ = [
     "RoomFanMode",
     "RoomWaterLevel",
     "SmartSession",
+    "UnsupportedRoomMapError",
     "credentials_from_tokens",
     "derive_qid",
 ]
