@@ -17,6 +17,7 @@ from botslab360 import (
     Botslab360Client,
     Device,
     InvalidSessionError,
+    OccupancyGrid,
     Room,
     RoomCleaningMode,
     RoomCleaningSettings,
@@ -939,7 +940,8 @@ def test_clean_rooms_maps_api_errors(monkeypatch, errno: int) -> None:
     run(scenario())
 
 
-def test_get_rooms_timeout_closes_push(monkeypatch) -> None:
+@pytest.mark.parametrize("method", ["get_rooms", "get_occupancy_grid"])
+def test_get_rooms_timeout_closes_push(monkeypatch, method) -> None:
     async def scenario() -> None:
         class WaitingPushClient(FakePushClient):
             async def read_event(self):
@@ -954,7 +956,7 @@ def test_get_rooms_timeout_closes_push(monkeypatch) -> None:
             )
         ) as http_client:
             with pytest.raises(ApiError) as raised:
-                await authenticated_client(http_client).get_rooms(
+                await getattr(authenticated_client(http_client), method)(
                     DEVICE,
                     timeout=0.01,
                 )
@@ -965,9 +967,10 @@ def test_get_rooms_timeout_closes_push(monkeypatch) -> None:
     run(scenario())
 
 
-def test_map_session_refresh_creates_new_push_client(monkeypatch) -> None:
+@pytest.mark.parametrize("method", ["get_rooms", "get_occupancy_grid"])
+def test_map_session_refresh_creates_new_push_client(monkeypatch, method) -> None:
     async def scenario() -> None:
-        FakePushClient.events = [map_event()]
+        FakePushClient.events = [map_event(grid_map_info())]
         FakePushClient.instances = []
         monkeypatch.setattr(client_module, "PushClient", FakePushClient)
         map_requests = 0
@@ -996,12 +999,15 @@ def test_map_session_refresh_creates_new_push_client(monkeypatch) -> None:
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(handler)
         ) as http_client:
-            rooms = await authenticated_client(http_client).get_rooms(
+            result = await getattr(authenticated_client(http_client), method)(
                 DEVICE,
                 timeout=1,
             )
 
-        assert len(rooms) == 10
+        if method == "get_rooms":
+            assert len(result) == 10
+        else:
+            assert result.cells == b"\x7f\xff"
         assert logins == 1
         assert map_requests == 2
         assert [(push.sid, push.push_key) for push in FakePushClient.instances] == [
@@ -1011,3 +1017,131 @@ def test_map_session_refresh_creates_new_push_client(monkeypatch) -> None:
         assert all(push.closed for push in FakePushClient.instances)
 
     run(scenario())
+
+
+def grid_map_info(*, segmented=True):
+    payload = map_info() if segmented else {"mapId": 1, "area": []}
+    block = b"\x20\x7f\xff"
+    return {
+        **payload,
+        "width": 2,
+        "height": 1,
+        "resolution": 0.05,
+        "x_min": -0.5,
+        "y_min": 0.0,
+        "map": base64.b64encode(block).decode(),
+        "lz4_len": len(block),
+    }
+
+
+@pytest.mark.parametrize("segmented", [False, True])
+@pytest.mark.parametrize("delivery", ["direct", "composite", "url"])
+def test_rooms_and_grid_share_mapinfo_transport(monkeypatch, segmented, delivery):
+    async def scenario():
+        payload = grid_map_info(segmented=segmented)
+        protocol = {"infoType": "20002", "data": json.dumps(payload)}
+        if delivery == "composite":
+            protocol = {"infoType": "30000", "data": {"cmds": [protocol]}}
+        if delivery == "url":
+            protocol = {"pushDataUrl": "https://maps.example.invalid/synthetic-map"}
+        FakePushClient.events = [{"sn": DEVICE.id, "data": json.dumps(protocol)}]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        requests = []
+
+        async def handler(request):
+            requests.append(request)
+            if request.method == "GET":
+                assert request.extensions["timeout"]["read"] == 30.0
+                return httpx.Response(200, json={"infoType": "20002", "data": payload})
+            assert request.url.path == "/clean/cmd/send"
+            form = parse_qs(request.content.decode())
+            assert form["infoType"] == ["30000"]
+            assert json.loads(form["data"][0]) == client_module.LOAD_DATA
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = authenticated_client(http)
+            grid = await client.get_occupancy_grid(DEVICE, timeout=1)
+            assert isinstance(grid, OccupancyGrid)
+            assert grid.cells == b"\x7f\xff"
+            rooms = await client.get_rooms(DEVICE.id, timeout=1)
+            assert len(rooms) == (10 if segmented else 0)
+            assert len([r for r in requests if r.method == "POST"]) == 2
+            assert len([r for r in requests if r.method == "GET"]) == (
+                2 if delivery == "url" else 0
+            )
+        assert len(FakePushClient.instances) == 2
+        assert all(push.closed for push in FakePushClient.instances)
+
+    run(scenario())
+
+
+def test_empty_segmented_rooms_do_not_imply_a_grid_capability(monkeypatch):
+    async def scenario():
+        payload = map_info()
+        payload["smartArea"]["value"] = []
+        FakePushClient.events = [map_event(payload)]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        requests = []
+
+        async def handler(request):
+            requests.append(request)
+            return httpx.Response(200, json={"errno": 0})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = authenticated_client(http)
+            assert await client.get_rooms(DEVICE) == []
+            with pytest.raises(ApiError) as raised:
+                await client.get_occupancy_grid(DEVICE)
+            assert raised.value.phase == "protocol"
+        assert len(requests) == 2
+
+    run(scenario())
+
+
+def test_grid_requires_authentication_without_sending_requests():
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: pytest.fail("No HTTP expected"))
+        ) as http:
+            client = Botslab360Client(Q, T, http_client=http)
+            with pytest.raises(AuthenticationError):
+                await client.get_occupancy_grid(DEVICE)
+
+    run(scenario())
+
+
+def test_grid_request_cancellation_cleans_up_push_and_waiter(monkeypatch):
+    async def scenario():
+        reading = asyncio.Event()
+        cancelled = asyncio.Event()
+
+        class WaitingPush(FakePushClient):
+            async def read_event(self):
+                reading.set()
+                try:
+                    await asyncio.Future()
+                finally:
+                    cancelled.set()
+
+        WaitingPush.instances = []
+        monkeypatch.setattr(client_module, "PushClient", WaitingPush)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda r: httpx.Response(200, json={"errno": 0})
+            )
+        ) as http:
+            task = asyncio.create_task(
+                authenticated_client(http).get_occupancy_grid(DEVICE)
+            )
+            await reading.wait()
+            task.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await task
+        assert cancelled.is_set()
+        assert len(WaitingPush.instances) == 1
+        assert WaitingPush.instances[0].closed
+
+    run(asyncio.wait_for(scenario(), timeout=2))

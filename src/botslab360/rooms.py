@@ -2,19 +2,17 @@
 
 from __future__ import annotations
 
-import asyncio
 import base64
 import copy
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
-from json import JSONDecodeError
 from typing import Any
-from urllib.parse import urlsplit
 
 import httpx
 
 from .exceptions import ApiError, UnsupportedRoomMapError
+from .map_info import _json_object, wait_for_map_info
 from .models import (
     ROOM_CLEAN_TIMES,
     Room,
@@ -24,21 +22,7 @@ from .models import (
 )
 from .protocol import PushClient
 
-COMPOSITE_INFO_TYPE = "30000"
-MAP_INFO_TYPE = "20002"
 ROOM_CLEANING_PATH = "/clean/record/setAreaAndCleaning"
-
-LOAD_DATA = {
-    "cmds": [
-        {"infoType": "20001", "data": {}},
-        {"infoType": "21014", "data": {}},
-        {
-            "infoType": "21011",
-            "data": {"startPos": 0, "userId": 0, "mask": 0},
-        },
-    ],
-    "mainCmds": [],
-}
 
 SWEEP_AREA_REFERENCE_FIELDS = (
     "active",
@@ -130,17 +114,6 @@ def normalize_room_settings(
             )
         normalized[room_id] = validate_room_cleaning_settings(settings)
     return normalized
-
-
-def _json_object(value: object, *, field: str) -> dict[str, Any]:
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except JSONDecodeError as exc:
-            raise ApiError(f"{field} is invalid JSON", phase="protocol") from exc
-    if not isinstance(value, dict):
-        raise ApiError(f"{field} is invalid", phase="protocol")
-    return value
 
 
 def decode_room_name(value: object) -> str:
@@ -358,71 +331,6 @@ def prepare_area_setting(
     return gson_json(area_setting)
 
 
-async def _download_map(
-    http_client: httpx.AsyncClient,
-    url: str,
-    *,
-    request_timeout: float,
-) -> dict[str, Any]:
-    parsed = urlsplit(url)
-    if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-        raise ApiError("Map push URL is invalid", phase="protocol")
-    try:
-        response = await http_client.get(url, timeout=request_timeout)
-        response.raise_for_status()
-    except httpx.HTTPStatusError as exc:
-        raise ApiError(
-            "Map push download returned an HTTP error",
-            status_code=exc.response.status_code,
-            phase="http",
-        ) from exc
-    except httpx.RequestError as exc:
-        raise ApiError("Map push download failed", phase="transport") from exc
-    try:
-        return _json_object(response.json(), field="Map push download")
-    except ValueError as exc:
-        raise ApiError("Map push download returned invalid JSON", phase="json") from exc
-
-
-async def _map_from_protocol(
-    protocol: dict[str, Any],
-    *,
-    http_client: httpx.AsyncClient,
-    request_timeout: float,
-) -> dict[str, Any] | None:
-    push_url = protocol.get("pushDataUrl")
-    if isinstance(push_url, str) and push_url:
-        downloaded = await _download_map(
-            http_client,
-            push_url,
-            request_timeout=request_timeout,
-        )
-        return await _map_from_protocol(
-            downloaded,
-            http_client=http_client,
-            request_timeout=request_timeout,
-        )
-
-    if str(protocol.get("infoType")) == MAP_INFO_TYPE:
-        return _json_object(protocol.get("data"), field="MapInfo")
-    if str(protocol.get("infoType")) != COMPOSITE_INFO_TYPE:
-        return None
-    composite = _json_object(protocol.get("data"), field="composite map data")
-    commands = composite.get("cmds")
-    if not isinstance(commands, list):
-        return None
-    for command in commands:
-        if isinstance(command, dict):
-            result = await _map_from_protocol(
-                command,
-                http_client=http_client,
-                request_timeout=request_timeout,
-            )
-            if result is not None:
-                return result
-    return None
-
-
 async def wait_for_room_map(
     push: PushClient,
     *,
@@ -431,29 +339,14 @@ async def wait_for_room_map(
     request_timeout: float,
     timeout: float,
 ) -> RoomMap:
-    """Wait for the next current MapInfo push for one device."""
+    """Parse rooms using the shared MapInfo transport."""
 
-    async def wait() -> RoomMap:
-        while True:
-            event = await push.read_event()
-            if event.get("sn") != device_id:
-                continue
-            try:
-                protocol = _json_object(event.get("data"), field="protocol")
-            except ApiError:
-                continue
-            map_info = await _map_from_protocol(
-                protocol,
-                http_client=http_client,
-                request_timeout=request_timeout,
-            )
-            if map_info is not None:
-                return parse_room_map(map_info)
-
-    try:
-        return await asyncio.wait_for(wait(), timeout=timeout)
-    except asyncio.TimeoutError as exc:
-        raise ApiError(
-            "Timed out waiting for current room map",
-            phase="timeout",
-        ) from exc
+    return parse_room_map(
+        await wait_for_map_info(
+            push,
+            device_id=device_id,
+            http_client=http_client,
+            request_timeout=request_timeout,
+            timeout=timeout,
+        )
+    )

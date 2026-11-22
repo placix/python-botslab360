@@ -33,18 +33,21 @@ from .exceptions import (
     InvalidSessionError,
     UnsupportedRoomMapError,
 )
+from .map_info import COMPOSITE_INFO_TYPE, LOAD_DATA, wait_for_map_info
 from .models import (
     AuthBackend,
     CaptchaChallenge,
     Device,
     DeviceIdentity,
     NetworkInfo,
+    OccupancyGrid,
     QihooCredentials,
     RobotStatus,
     Room,
     RoomCleaningSettings,
     SmartSession,
 )
+from .occupancy import parse_occupancy_grid
 from .protocol import (
     ANDROID_360_PUSH_CLIENT_VERSION,
     ANDROID_360_PUSH_HEARTBEAT_INTERVAL,
@@ -61,13 +64,11 @@ from .protocol import (
 )
 from .quc import ANDROID_360_PROFILE, BOTSLAB_CLOUD_PROFILE, QucAuth
 from .rooms import (
-    COMPOSITE_INFO_TYPE,
-    LOAD_DATA,
     ROOM_CLEANING_PATH,
     RoomMap,
     normalize_room_settings,
+    parse_room_map,
     prepare_area_setting,
-    wait_for_room_map,
 )
 
 DEVICE_LIST_PATH = "/common/dev/GetList"
@@ -665,6 +666,21 @@ class Botslab360Client:
             return []
         return list(room_map.rooms)
 
+    async def get_occupancy_grid(
+        self,
+        device: Device | str,
+        *,
+        timeout: float = 30.0,
+    ) -> OccupancyGrid:
+        """Fetch and decode a vendor grid, independently of room capability."""
+
+        device_id = _device_id(device)
+        map_info = await self._with_session_refresh(
+            lambda: self._get_map_info_once(device_id=device_id, timeout=timeout)
+        )
+        # Bounds-checked decoding may still process up to a million cells.
+        return await asyncio.to_thread(parse_occupancy_grid, map_info)
+
     async def get_network_info(
         self,
         device: Device | str,
@@ -774,14 +790,24 @@ class Botslab360Client:
         device_id: str,
         timeout: float,
     ) -> RoomMap:
+        return parse_room_map(
+            await self._get_map_info_once(device_id=device_id, timeout=timeout)
+        )
+
+    async def _get_map_info_once(
+        self,
+        *,
+        device_id: str,
+        timeout: float,
+    ) -> dict[str, Any]:
         if self._session is None:
             raise AuthenticationError(
-                "Authentication is required before requesting rooms",
+                "Authentication is required before requesting maps",
                 phase="authentication",
             )
         async with self._push_connection() as push:
             waiter = asyncio.create_task(
-                wait_for_room_map(
+                wait_for_map_info(
                     push,
                     device_id=device_id,
                     http_client=self._http_client,
@@ -796,7 +822,7 @@ class Botslab360Client:
                     info_type=COMPOSITE_INFO_TYPE,
                     data=json.dumps(LOAD_DATA, separators=(",", ":")),
                     task_id=str(uuid4()),
-                    operation="room map request",
+                    operation="map request",
                 )
                 return await waiter
             finally:

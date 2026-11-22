@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum, IntEnum
 from uuid import UUID, uuid4
 
@@ -127,6 +127,25 @@ class Room:
     water_pump: int | None
     vertices: tuple[tuple[int, int], ...] | None = None
     mode: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class OccupancyGrid:
+    """Vendor grid in row-major order, with row zero at y_min.
+
+    On the confirmed S6 format resolution is metres/cell, origins are metres,
+    and dock_position is an integer (x, y) pair in millimetres in that frame.
+    Cells remain unmodified; no image orientation or rendering is applied.
+    """
+
+    map_id: int
+    width: int
+    height: int
+    resolution: float
+    x_min: float
+    y_min: float
+    cells: bytes = field(repr=False)
+    dock_position: tuple[int, int] | None = None
 
 
 class RoomFanMode(str, Enum):

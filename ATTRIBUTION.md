@@ -12,13 +12,30 @@ particularly its
 Relevant behavior was also compared with the decompiled Android application
 where possible.
 
-The Python source code, API design, models, error handling, and tests in this
-repository are this project's own implementation. The referenced upstream
-protocol work remains attributed to TA2k under its MIT license.
+The Python authentication code, API design, models, error handling, and tests
+are this project's own implementation. The referenced authentication protocol
+work remains attributed to TA2k under its MIT license.
 
 The source project is available at:
 
 https://github.com/TA2k/ioBroker.botslab360
+
+## Occupancy-grid reference
+
+The raw LZ4 block decoder and its basic synthetic test vectors were adapted
+from the real-device-tested 360 S6 reference implementation contributed by
+[DrLabel](https://github.com/DrLabel) in
+[home-assistant-botslab360 PR #6](https://github.com/placix/home-assistant-botslab360/pull/6),
+specifically `grid_map.py` and `tests/test_grid_map.py` at commit
+`6e396166d7ae95584cfb674dcab5ab263648540c` in
+[DrLabel/home-assistant-botslab360](https://github.com/DrLabel/home-assistant-botslab360).
+That source is MIT-licensed with `Copyright (c) 2026 placix`; its required
+notice and permission text are included in this project's [LICENSE](LICENSE).
+
+Strict protocol validation, the typed public API and the shared transport
+refactor were implemented here. Fixtures are synthetic; no captured home map
+or private coordinates are redistributed. This attribution does not imply
+that DrLabel maintains this Python library.
 
 ## Upstream license
 

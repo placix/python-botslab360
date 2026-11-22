@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import logging
 from urllib.parse import parse_qs
@@ -60,10 +61,10 @@ def make_client(http, backend=AuthBackend.ROBOT360, **kwargs):
     ("operation", "scenario"),
     [
         (operation, scenario)
-        for operation in ("rooms", "status", "network", "clean_rooms")
+        for operation in ("rooms", "grid", "status", "network", "clean_rooms")
         for scenario in ("android", "fallback", "both", "post_push", "post_http")
     ]
-    + [("clean_rooms", "cleaning_http"), ("rooms", "map_parse")],
+    + [("clean_rooms", "cleaning_http"), ("rooms", "map_parse"), ("grid", "map_parse")],
 )
 def test_profile_fallback_never_replays_operations(
     monkeypatch, caplog, operation, scenario
@@ -124,6 +125,12 @@ def test_profile_fallback_never_replays_operations(
                             "data": {
                                 "mapId": 1,
                                 "cleanId": "synthetic-private-clean-id",
+                                "width": 2,
+                                "height": 1,
+                                "resolution": 0.05,
+                                "x_min": 0,
+                                "y_min": 0,
+                                "map": base64.b64encode(b"\x20\x7f\xff").decode(),
                                 "smartArea": {
                                     "activeIds": [],
                                     "value": [{"id": 1, "name": "Um9vbQ=="}],
@@ -159,6 +166,7 @@ def test_profile_fallback_never_replays_operations(
             client = make_client(http)
             method = {
                 "rooms": client.get_rooms,
+                "grid": client.get_occupancy_grid,
                 "status": client.get_status,
                 "network": client.get_network_info,
                 "clean_rooms": lambda device: client.clean_rooms(device, [1]),
@@ -178,6 +186,8 @@ def test_profile_fallback_never_replays_operations(
                 result = await method(DEVICE_ID)
                 if operation == "rooms":
                     assert [(room.id, room.name) for room in result] == [(1, "Room")]
+                elif operation == "grid":
+                    assert result.cells == b"\x7f\xff"
                 elif operation == "status":
                     assert result.state == "idle"
                 elif operation == "network":

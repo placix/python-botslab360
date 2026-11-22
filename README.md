@@ -207,6 +207,60 @@ carpet-related value, not a verified room sweep/mop selector. New code must not
 use the deprecated `RoomCleaningMode` compatibility enum or
 `RoomCleaningSettings.mode`; attempts to set the latter are rejected.
 
+## Occupancy grids
+
+The public API can fetch the vendor occupancy grid independently of room
+segmentation:
+
+```python
+from botslab360 import OccupancyGrid
+
+grid: OccupancyGrid = await client.get_occupancy_grid(robot, timeout=30.0)
+print(grid.map_id, grid.width, grid.height, grid.resolution)
+cells: bytes = grid.cells
+dock: tuple[int, int] | None = grid.dock_position
+```
+
+`robot` may be a `Device` or device-ID string. The frozen, slotted
+`OccupancyGrid` contains `map_id`, `width`, `height`, `resolution`, `x_min`,
+`y_min`, `cells`, and optional `dock_position`. It contains no images, rendering
+state, timestamps or raw vendor dictionary. Decoding is offloaded from the
+async event loop; the timeout controls the wait for the current MapInfo.
+
+This format is based on confirmed 360 S6 behavior and the reference in
+[Home Assistant PR #6](https://github.com/placix/home-assistant-botslab360/pull/6)
+by [DrLabel](https://github.com/DrLabel). It is not a claim that every
+360/Botslab model uses this format:
+
+- Dimensions are cell counts, resolution is metres per cell, and `x_min` and
+  `y_min` are the origin in metres.
+- `cells` contains exactly `width * height` vendor bytes in row-major order;
+  row zero is at `y_min`. No mirroring, rotation, palette or image scaling is
+  applied. Confirmed S6 values are `0` for wall/obstacle, `127` for unknown,
+  and `255` for floor. Other byte values are preserved unchanged.
+- Dock coordinates are an integer `(x, y)` pair in millimetres in the same
+  frame. Absence is `None`; a reported `(0, 0)` is preserved. On this S6,
+  `RobotStatus.position_x`/`position_y` use the same millimetre frame; this
+  does not establish position units for every other model.
+
+The parser validates field types without converting arbitrary strings or
+floats to integers. Geometry must be finite, resolution positive, and the grid
+is limited to 1,000,000 cells. Base64 spaces are repaired to `+`, missing
+padding is restored, and decoding is strict; encoded input is also bounded.
+The raw LZ4 block must decode to exactly the grid size. Optional `lz4_len`, if
+present, must be an integer matching the compressed block length.
+
+Missing or malformed grids raise `ApiError` with `phase="protocol"`. An empty
+room list is not treated as a grid capability signal: a room-capable robot may
+simply have no configured rooms. Existing `get_rooms()`/`clean_rooms()`
+semantics are unchanged, and `cleanId` remains required for room cleaning.
+Only successful grid retrieval confirms a currently usable occupancy grid.
+
+`chargeHandlePhi`, `chargeHandleState`, and `base64_len` are not interpreted or
+exposed because their required semantics are not established by the reference.
+Applications remain responsible for rendering, overlays, caching and refresh
+policy. No Pillow or LZ4 dependency is added.
+
 ## Status and network information
 
 `RobotStatus` exposes common values such as battery level, robot and charging
