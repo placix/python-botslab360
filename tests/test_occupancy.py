@@ -5,8 +5,17 @@ from dataclasses import FrozenInstanceError
 
 import pytest
 
-from botslab360 import ApiError, OccupancyGrid
+from botslab360 import (
+    GRID_CELL_FREE,
+    GRID_CELL_OCCUPIED,
+    GRID_CELL_UNKNOWN,
+    ApiError,
+    OccupancyGrid,
+    UnsupportedOccupancyGridError,
+    UnsupportedRoomMapError,
+)
 from botslab360.occupancy import _decode_lz4_block, parse_occupancy_grid
+from botslab360.protocol import _optional_position
 
 
 def literal_block(cells: bytes) -> bytes:
@@ -151,11 +160,8 @@ def test_base64_spaces_are_plus_and_missing_padding_is_restored():
         *(
             ("chargeHandlePos", value)
             for value in (
-                None,
                 {},
-                [],
                 [1],
-                [1, 2, 3],
                 [True, 2],
                 [1, "2"],
                 [1.0, 2],
@@ -219,3 +225,125 @@ def test_optional_metadata_and_numeric_geometry_do_not_guess_other_capabilities(
     assert grid.dock_position is None
     info["chargeHandlePos"] = [0, 0]
     assert parse_occupancy_grid(info).dock_position == (0, 0)
+
+
+def test_long_overlap_with_remainder_and_trailing_literals():
+    """PR #3 vector covers a match extension followed by a new sequence."""
+    block = b"\x2fab\x02\x00\x03\x10c"
+    assert _decode_lz4_block(block, 25) == b"ab" * 12 + b"c"
+
+
+def test_optimized_matches_agree_with_bytewise_overlap_reference():
+    """Exercise offsets, exact repeats, partial repeats and both copy paths."""
+    literals = bytes(range(32))
+    for offset in (1, 2, 3, 7, 16, 32):
+        for length in (4, 7, 16, 19, 20, 63, 257, 1000):
+            nibble = min(length - 4, 15)
+            extension = b""
+            if nibble == 15:
+                extra = length - 4 - 15
+                extension = b"\xff" * (extra // 255) + bytes([extra % 255])
+            block = (
+                bytes([0xF0 | nibble, len(literals) - 15])
+                + literals
+                + offset.to_bytes(2, "little")
+                + extension
+                + b"\x10z"
+            )
+            expected = bytearray(literals)
+            for _ in range(length):
+                expected.append(expected[-offset])
+            expected.extend(b"z")
+            assert _decode_lz4_block(block, len(expected)) == bytes(expected)
+
+
+def test_exact_conservative_cell_limit_accepts_long_compressed_match():
+    """Adapted from PR #3: test the accepted boundary, not only rejection."""
+    limit = 1_000_000
+    extra = limit - 1 - 4 - 15
+    extension = b"\xff" * (extra // 255) + bytes([extra % 255])
+    block = b"\x1f\x7f\x01\x00" + extension
+    info = grid_info()
+    info.update(
+        width=1000,
+        height=1000,
+        map=base64.b64encode(block).decode(),
+        lz4_len=len(block),
+    )
+    assert parse_occupancy_grid(info).cells == bytes([GRID_CELL_UNKNOWN]) * limit
+
+
+@pytest.mark.parametrize("value", [None, [], [5, -6], [5, -6, 0]])
+def test_dock_position_matches_existing_status_position_semantics(value):
+    info = grid_info()
+    info["chargeHandlePos"] = value
+    status_position = _optional_position(value)
+    expected = None if status_position == (None, None) else status_position
+    assert parse_occupancy_grid(info).dock_position == expected
+
+
+@pytest.mark.parametrize(
+    "info",
+    [
+        {"mapId": 1, "area": []},
+        {"mapId": 1, "cleanId": "synthetic", "smartArea": {"value": []}},
+        {"mapId": 1},
+    ],
+)
+def test_complete_absence_of_grid_is_typed_unsupported(info):
+    with pytest.raises(UnsupportedOccupancyGridError) as raised:
+        parse_occupancy_grid(info)
+    assert isinstance(raised.value, ApiError)
+    assert not isinstance(raised.value, UnsupportedRoomMapError)
+    assert raised.value.phase == "unsupported"
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["width", "height", "resolution", "x_min", "y_min", "map", "lz4_len", "base64_len"],
+)
+def test_partial_grid_metadata_is_corruption_not_unsupported(field):
+    with pytest.raises(ApiError) as raised:
+        parse_occupancy_grid({"mapId": 1, field: None})
+    assert not isinstance(raised.value, UnsupportedOccupancyGridError)
+    assert raised.value.phase == "protocol"
+
+
+@pytest.mark.parametrize("map_id", [None, True, "1", 1.5])
+def test_invalid_map_id_precedes_unsupported_classification(map_id):
+    with pytest.raises(ApiError) as raised:
+        parse_occupancy_grid({"mapId": map_id})
+    assert not isinstance(raised.value, UnsupportedOccupancyGridError)
+    assert raised.value.phase == "protocol"
+
+
+@pytest.mark.parametrize(
+    "room_fields",
+    [{}, {"area": []}, {"cleanId": "synthetic", "smartArea": {"value": []}}],
+)
+def test_occupancy_model_does_not_claim_room_segmentation(room_fields):
+    info = grid_info()
+    del info["area"]
+    model = parse_occupancy_grid(info | room_fields)
+    assert not hasattr(model, "room_segmentation")
+    assert model.dock_position == (100, -200)
+
+
+def test_public_cell_constants_preserve_s6_meanings_without_restricting_bytes():
+    assert (GRID_CELL_OCCUPIED, GRID_CELL_UNKNOWN, GRID_CELL_FREE) == (0, 127, 255)
+
+
+def test_tiny_grid_input_limit_is_checked_before_base64_decode(monkeypatch):
+    from botslab360 import occupancy
+
+    monkeypatch.setattr(
+        occupancy.base64,
+        "b64decode",
+        lambda *args, **kwargs: pytest.fail("Oversized input reached decoder"),
+    )
+    info = grid_info()
+    info.update(width=1, height=1, map="A" * 8)
+    with pytest.raises(ApiError, match="input limit") as raised:
+        parse_occupancy_grid(info)
+    assert raised.value.phase == "protocol"
+    assert not isinstance(raised.value, UnsupportedOccupancyGridError)

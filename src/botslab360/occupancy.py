@@ -10,13 +10,25 @@ import base64
 import binascii
 import math
 
-from .exceptions import ApiError
+from .exceptions import ApiError, UnsupportedOccupancyGridError
 from .map_info import _json_object
 from .models import OccupancyGrid
 
+# About 65 times the observed 166x92 S6 grid, or 50x50 m at 5 cm/cell.
+# Keep output/temporary allocations conservative until a larger map is evidenced.
 _MAX_CELLS = 1_000_000
 # A generous compressed-input bound also limits Base64 allocation and scanning.
 _MAX_ENCODED_LENGTH = 4 * ((2 * _MAX_CELLS + 2) // 3)
+_GRID_FIELDS = {
+    "width",
+    "height",
+    "resolution",
+    "x_min",
+    "y_min",
+    "map",
+    "lz4_len",
+    "base64_len",
+}
 
 
 def _error(message: str) -> ApiError:
@@ -83,8 +95,17 @@ def _decode_lz4_block(source: bytes, expected_size: int) -> bytes:
         match_length += 4
         if len(output) + match_length > expected_size:
             raise _error("LZ4 map match exceeds the expected grid size")
-        for _ in range(match_length):
-            output.append(output[-offset])
+        start = len(output) - offset
+        if match_length <= offset:
+            output.extend(output[start : start + match_length])
+        else:
+            # Overlap repeats the last offset-byte pattern, including a tail.
+            # Unlike the reference's extra repeat, divmod allocates exactly
+            # the match length, with the output bound checked above.
+            pattern = output[start:]
+            repeats, remainder = divmod(match_length, offset)
+            output.extend(pattern * repeats)
+            output.extend(pattern[:remainder])
     if len(output) != expected_size:
         raise _error("Decompressed map size does not match grid dimensions")
     return bytes(output)
@@ -95,6 +116,10 @@ def parse_occupancy_grid(map_info: object) -> OccupancyGrid:
 
     info = _json_object(map_info, field="MapInfo")
     map_id = _integer(info.get("mapId"), "mapId")
+    if _GRID_FIELDS.isdisjoint(info):
+        raise UnsupportedOccupancyGridError(
+            "The current map does not include an occupancy grid", phase="unsupported"
+        )
     width = _integer(info.get("width"), "width")
     height = _integer(info.get("height"), "height")
     cell_count = width * height
@@ -109,7 +134,11 @@ def parse_occupancy_grid(map_info: object) -> OccupancyGrid:
     encoded = info.get("map")
     if not isinstance(encoded, str) or not encoded:
         raise _error("MapInfo is missing a usable occupancy-grid payload")
-    if len(encoded) > _MAX_ENCODED_LENGTH:
+    # Even a tiny declared grid must not cause a global-limit-sized decode.
+    # Raw LZ4 blocks fit within 2*N+1 bytes for N output bytes; allow that
+    # conservative envelope plus Base64 padding, capped by the global guard.
+    encoded_limit = min(_MAX_ENCODED_LENGTH, 4 * ((2 * cell_count + 3) // 3))
+    if len(encoded) > encoded_limit:
         raise _error("Encoded occupancy grid exceeds the supported input limit")
     encoded = encoded.replace(" ", "+")
     try:
@@ -124,9 +153,12 @@ def parse_occupancy_grid(map_info: object) -> OccupancyGrid:
             raise _error("MapInfo lz4_len does not match the compressed payload")
 
     dock_position = None
-    if "chargeHandlePos" in info:
-        dock = info["chargeHandlePos"]
-        if not isinstance(dock, list) or len(dock) != 2:
+    dock = info.get("chargeHandlePos")
+    # Match the existing status pos parser: empty/absent means unavailable,
+    # and only the first two strict integers are coordinates. Extra metadata
+    # is not assigned meaning or exposed as a third coordinate.
+    if dock not in (None, []):
+        if not isinstance(dock, list) or len(dock) < 2:
             raise _error("Occupancy grid has an invalid dock position")
         dock_position = (
             _integer(dock[0], "dock x coordinate"),

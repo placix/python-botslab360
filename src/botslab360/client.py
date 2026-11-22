@@ -791,7 +791,9 @@ class Botslab360Client:
         timeout: float,
     ) -> RoomMap:
         return parse_room_map(
-            await self._get_map_info_once(device_id=device_id, timeout=timeout)
+            await self._get_map_info_once(
+                device_id=device_id, timeout=timeout, room_request=True
+            )
         )
 
     async def _get_map_info_once(
@@ -799,10 +801,13 @@ class Botslab360Client:
         *,
         device_id: str,
         timeout: float,
+        room_request: bool = False,
     ) -> dict[str, Any]:
         if self._session is None:
             raise AuthenticationError(
-                "Authentication is required before requesting maps",
+                "Authentication is required before requesting rooms"
+                if room_request
+                else "Authentication is required before requesting maps",
                 phase="authentication",
             )
         async with self._push_connection() as push:
@@ -813,6 +818,7 @@ class Botslab360Client:
                     http_client=self._http_client,
                     request_timeout=self._request_timeout,
                     timeout=timeout,
+                    description="room map" if room_request else "map",
                 )
             )
             await asyncio.sleep(0)
@@ -822,7 +828,7 @@ class Botslab360Client:
                     info_type=COMPOSITE_INFO_TYPE,
                     data=json.dumps(LOAD_DATA, separators=(",", ":")),
                     task_id=str(uuid4()),
-                    operation="map request",
+                    operation="room map request" if room_request else "map request",
                 )
                 return await waiter
             finally:

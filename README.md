@@ -213,7 +213,7 @@ The public API can fetch the vendor occupancy grid independently of room
 segmentation:
 
 ```python
-from botslab360 import OccupancyGrid
+from botslab360 import OccupancyGrid, UnsupportedOccupancyGridError
 
 grid: OccupancyGrid = await client.get_occupancy_grid(robot, timeout=30.0)
 print(grid.map_id, grid.width, grid.height, grid.resolution)
@@ -239,7 +239,9 @@ by [DrLabel](https://github.com/DrLabel). It is not a claim that every
   applied. Confirmed S6 values are `0` for wall/obstacle, `127` for unknown,
   and `255` for floor. Other byte values are preserved unchanged.
 - Dock coordinates are an integer `(x, y)` pair in millimetres in the same
-  frame. Absence is `None`; a reported `(0, 0)` is preserved. On this S6,
+  frame. As with status `pos`, an absent, `null` or empty position is `None`;
+  otherwise the first two strict integers are used, without interpreting extra
+  entries. A reported `(0, 0)` is preserved. On this S6,
   `RobotStatus.position_x`/`position_y` use the same millimetre frame; this
   does not establish position units for every other model.
 
@@ -247,14 +249,29 @@ The parser validates field types without converting arbitrary strings or
 floats to integers. Geometry must be finite, resolution positive, and the grid
 is limited to 1,000,000 cells. Base64 spaces are repaired to `+`, missing
 padding is restored, and decoding is strict; encoded input is also bounded.
+The input bound scales with the declared cell count as well as the global
+limit, so tiny grids cannot cause large Base64 allocations.
 The raw LZ4 block must decode to exactly the grid size. Optional `lz4_len`, if
 present, must be an integer matching the compressed block length.
 
-Missing or malformed grids raise `ApiError` with `phase="protocol"`. An empty
-room list is not treated as a grid capability signal: a room-capable robot may
+After validating `mapId`, a MapInfo with no grid geometry/payload metadata raises
+`UnsupportedOccupancyGridError`, an `ApiError` subclass with `phase="unsupported"`.
+It describes the current map only, not a permanent device capability. Partial or
+malformed grids remain `ApiError(phase="protocol")`; transport and authentication
+failures retain their existing classifications. An empty room list is not treated
+as a grid capability signal: a room-capable robot may
 simply have no configured rooms. Existing `get_rooms()`/`clean_rooms()`
 semantics are unchanged, and `cleanId` remains required for room cleaning.
 Only successful grid retrieval confirms a currently usable occupancy grid.
+
+Public `GRID_CELL_OCCUPIED`, `GRID_CELL_UNKNOWN` and `GRID_CELL_FREE` constants
+name the observed S6 values 0, 127 and 255. They do not impose a model-independent
+palette or restrict other cell bytes. There is no `room_segmentation` boolean:
+absence of a recognized no-room structure does not establish room capability.
+
+The 1,000,000-cell limit is about 65 times the observed 166-by-92 S6 grid and
+corresponds to 50-by-50 metres at 5 cm/cell. It bounds allocation without a
+speculative fourfold increase for larger maps not yet evidenced.
 
 `chargeHandlePhi`, `chargeHandleState`, and `base64_len` are not interpreted or
 exposed because their required semantics are not established by the reference.

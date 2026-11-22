@@ -114,6 +114,7 @@ async def wait_for_map_info(
     http_client: httpx.AsyncClient,
     request_timeout: float,
     timeout: float,
+    description: str = "map",
 ) -> dict[str, Any]:
     """Wait for the next current MapInfo push for one device."""
 
@@ -138,6 +139,6 @@ async def wait_for_map_info(
         return await asyncio.wait_for(wait(), timeout=timeout)
     except asyncio.TimeoutError as exc:
         raise ApiError(
-            "Timed out waiting for current map",
+            f"Timed out waiting for current {description}",
             phase="timeout",
         ) from exc

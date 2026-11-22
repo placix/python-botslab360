@@ -9,9 +9,13 @@ from .exceptions import (
     CaptchaRequired,
     InvalidSessionError,
     QucAuthenticationError,
+    UnsupportedOccupancyGridError,
     UnsupportedRoomMapError,
 )
 from .models import (
+    GRID_CELL_FREE,
+    GRID_CELL_OCCUPIED,
+    GRID_CELL_UNKNOWN,
     ROOM_CLEAN_TIMES,
     AuthBackend,
     CaptchaChallenge,
@@ -30,6 +34,9 @@ from .models import (
 )
 
 __all__ = [
+    "GRID_CELL_FREE",
+    "GRID_CELL_OCCUPIED",
+    "GRID_CELL_UNKNOWN",
     "ROOM_CLEAN_TIMES",
     "ApiError",
     "AuthBackend",
@@ -53,6 +60,7 @@ __all__ = [
     "RoomFanMode",
     "RoomWaterLevel",
     "SmartSession",
+    "UnsupportedOccupancyGridError",
     "UnsupportedRoomMapError",
     "credentials_from_tokens",
     "derive_qid",

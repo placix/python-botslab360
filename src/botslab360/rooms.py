@@ -348,5 +348,6 @@ async def wait_for_room_map(
             http_client=http_client,
             request_timeout=request_timeout,
             timeout=timeout,
+            description="room map",
         )
     )

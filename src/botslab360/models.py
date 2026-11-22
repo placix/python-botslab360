@@ -129,6 +129,13 @@ class Room:
     mode: str | None = None
 
 
+# Cell meanings observed on the 360 S6, not universal model capability claims.
+# Unknown additional cell values must remain representable and unchanged.
+GRID_CELL_OCCUPIED = 0
+GRID_CELL_UNKNOWN = 127
+GRID_CELL_FREE = 255
+
+
 @dataclass(frozen=True, slots=True)
 class OccupancyGrid:
     """Vendor grid in row-major order, with row zero at y_min.

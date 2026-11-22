@@ -24,11 +24,13 @@ from botslab360 import (
     RoomFanMode,
     RoomWaterLevel,
     SmartSession,
+    UnsupportedOccupancyGridError,
     UnsupportedRoomMapError,
 )
 from botslab360.rooms import (
     parse_room_map,
     prepare_area_setting,
+    wait_for_room_map,
 )
 
 QID = "1234567890"
@@ -962,6 +964,11 @@ def test_get_rooms_timeout_closes_push(monkeypatch, method) -> None:
                 )
 
         assert raised.value.phase == "timeout"
+        assert str(raised.value) == (
+            "Timed out waiting for current room map"
+            if method == "get_rooms"
+            else "Timed out waiting for current map"
+        )
         assert WaitingPushClient.instances[0].closed is True
 
     run(scenario())
@@ -1093,22 +1100,29 @@ def test_empty_segmented_rooms_do_not_imply_a_grid_capability(monkeypatch):
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
             client = authenticated_client(http)
             assert await client.get_rooms(DEVICE) == []
-            with pytest.raises(ApiError) as raised:
+            with pytest.raises(UnsupportedOccupancyGridError) as raised:
                 await client.get_occupancy_grid(DEVICE)
-            assert raised.value.phase == "protocol"
+            assert raised.value.phase == "unsupported"
         assert len(requests) == 2
 
     run(scenario())
 
 
-def test_grid_requires_authentication_without_sending_requests():
+@pytest.mark.parametrize("method", ["get_rooms", "get_occupancy_grid"])
+def test_map_requires_authentication_without_sending_requests(method):
     async def scenario():
         async with httpx.AsyncClient(
             transport=httpx.MockTransport(lambda r: pytest.fail("No HTTP expected"))
         ) as http:
             client = Botslab360Client(Q, T, http_client=http)
-            with pytest.raises(AuthenticationError):
-                await client.get_occupancy_grid(DEVICE)
+            with pytest.raises(AuthenticationError) as raised:
+                await getattr(client, method)(DEVICE)
+            assert raised.value.phase == "authentication"
+            assert str(raised.value) == (
+                "Authentication is required before requesting rooms"
+                if method == "get_rooms"
+                else "Authentication is required before requesting maps"
+            )
 
     run(scenario())
 
@@ -1145,3 +1159,70 @@ def test_grid_request_cancellation_cleans_up_push_and_waiter(monkeypatch):
         assert WaitingPush.instances[0].closed
 
     run(asyncio.wait_for(scenario(), timeout=2))
+
+
+@pytest.mark.parametrize("method", ["get_rooms", "clean_rooms"])
+@pytest.mark.parametrize(
+    ("failure", "phase", "message"),
+    [
+        ("http", "http", "Room map request returned an HTTP error"),
+        ("transport", "transport", "Room map request failed"),
+        ("json", "json", "Room map request returned invalid JSON"),
+        ("api", "api", "Smart Home API rejected room map request"),
+    ],
+)
+def test_shared_transport_preserves_room_request_errors(
+    monkeypatch, method, failure, phase, message
+):
+    async def scenario():
+        FakePushClient.events = [map_event()]
+        FakePushClient.instances = []
+        monkeypatch.setattr(client_module, "PushClient", FakePushClient)
+        requests = []
+
+        def handler(request):
+            requests.append(request)
+            if failure == "transport":
+                raise httpx.RemoteProtocolError("synthetic", request=request)
+            if failure == "http":
+                return httpx.Response(503)
+            if failure == "json":
+                return httpx.Response(200, text="synthetic invalid JSON")
+            return httpx.Response(200, json={"errno": 212})
+
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = authenticated_client(http)
+            args = (DEVICE, [1]) if method == "clean_rooms" else (DEVICE,)
+            with pytest.raises(ApiError) as raised:
+                await getattr(client, method)(*args, timeout=1)
+        assert raised.value.phase == phase
+        assert str(raised.value) == message
+        assert len(requests) == 1
+        assert requests[0].url.path == "/clean/cmd/send"
+        assert FakePushClient.instances[0].closed
+
+    run(scenario())
+
+
+def test_room_waiter_compatibility_wrapper_keeps_timeout_message():
+    async def scenario():
+        class WaitingPush(FakePushClient):
+            async def read_event(self):
+                await asyncio.Future()
+
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda r: pytest.fail("No HTTP"))
+        ) as http:
+            with pytest.raises(
+                ApiError, match="^Timed out waiting for current room map$"
+            ) as raised:
+                await wait_for_room_map(
+                    WaitingPush("synthetic", "synthetic"),
+                    device_id=DEVICE.id,
+                    http_client=http,
+                    request_timeout=1,
+                    timeout=0.01,
+                )
+        assert raised.value.phase == "timeout"
+
+    run(scenario())

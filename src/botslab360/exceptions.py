@@ -109,3 +109,7 @@ class InvalidSessionError(ApiError):
 
 class UnsupportedRoomMapError(ApiError):
     """The current map explicitly exposes no room-segmentation capability."""
+
+
+class UnsupportedOccupancyGridError(ApiError):
+    """A valid MapInfo contains no occupancy-grid data, not a device guarantee."""

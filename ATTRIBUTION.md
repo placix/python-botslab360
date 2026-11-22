@@ -37,6 +37,16 @@ refactor were implemented here. Fixtures are synthetic; no captured home map
 or private coordinates are redistributed. This attribution does not imply
 that DrLabel maintains this Python library.
 
+Reconciliation also uses DrLabel's parallel library implementation in
+[python-botslab360 PR #3](https://github.com/placix/python-botslab360/pull/3),
+commit `37d0e3483ad0862dc03ffff5311a87ed0360a54d` in
+[DrLabel/python-botslab360](https://github.com/DrLabel/python-botslab360),
+under the same MIT notice. Its optimized repeating-match approach, extended
+match/trailing-literal and exact-cell-limit vectors, status-compatible dock
+handling, cell constants and room-message regression checks informed this
+implementation. The typed unsupported-grid error and conservative validation
+remain library API decisions here.
+
 ## Upstream license
 
 MIT License
