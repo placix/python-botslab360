@@ -317,6 +317,14 @@ def test_invalid_map_id_precedes_unsupported_classification(map_id):
     assert raised.value.phase == "protocol"
 
 
+@pytest.mark.parametrize("position", [[1], [True, 2], ["1", 2], {}])
+def test_invalid_dock_is_never_classified_as_absent_grid(position):
+    with pytest.raises(ApiError) as raised:
+        parse_occupancy_grid({"mapId": 1, "chargeHandlePos": position})
+    assert raised.value.phase == "protocol"
+    assert not isinstance(raised.value, UnsupportedOccupancyGridError)
+
+
 @pytest.mark.parametrize(
     "room_fields",
     [{}, {"area": []}, {"cleanId": "synthetic", "smartArea": {"value": []}}],

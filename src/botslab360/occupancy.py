@@ -116,6 +116,19 @@ def parse_occupancy_grid(map_info: object) -> OccupancyGrid:
 
     info = _json_object(map_info, field="MapInfo")
     map_id = _integer(info.get("mapId"), "mapId")
+    # Validate any reported position before declaring an absent grid, so
+    # malformed coordinates cannot be mislabeled as unsupported capability.
+    dock_position = None
+    dock = info.get("chargeHandlePos")
+    # Same rules as status pos: absent/empty or first two strict integers;
+    # trailing metadata is neither interpreted nor exposed.
+    if dock not in (None, []):
+        if not isinstance(dock, list) or len(dock) < 2:
+            raise _error("Occupancy grid has an invalid dock position")
+        dock_position = (
+            _integer(dock[0], "dock x coordinate"),
+            _integer(dock[1], "dock y coordinate"),
+        )
     if _GRID_FIELDS.isdisjoint(info):
         raise UnsupportedOccupancyGridError(
             "The current map does not include an occupancy grid", phase="unsupported"
@@ -152,18 +165,6 @@ def parse_occupancy_grid(map_info: object) -> OccupancyGrid:
         if compressed_length != len(compressed):
             raise _error("MapInfo lz4_len does not match the compressed payload")
 
-    dock_position = None
-    dock = info.get("chargeHandlePos")
-    # Match the existing status pos parser: empty/absent means unavailable,
-    # and only the first two strict integers are coordinates. Extra metadata
-    # is not assigned meaning or exposed as a third coordinate.
-    if dock not in (None, []):
-        if not isinstance(dock, list) or len(dock) < 2:
-            raise _error("Occupancy grid has an invalid dock position")
-        dock_position = (
-            _integer(dock[0], "dock x coordinate"),
-            _integer(dock[1], "dock y coordinate"),
-        )
     return OccupancyGrid(
         map_id=map_id,
         width=width,
