@@ -1,9 +1,9 @@
 # botslab360
 
-[![Validate](https://github.com/placix/python-botslab360/actions/workflows/validate.yml/badge.svg)](https://github.com/placix/python-botslab360/actions/workflows/validate.yml)
 [![PyPI](https://img.shields.io/pypi/v/botslab360.svg)](https://pypi.org/project/botslab360/)
 [![Python](https://img.shields.io/pypi/pyversions/botslab360.svg)](https://pypi.org/project/botslab360/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+![AI Assisted Codex](https://img.shields.io/badge/AI%20Assisted-Codex-blue?logo=openai&logoColor=white)
 
 `botslab360` is an asynchronous Python client for selected Botslab / 360 robot
 vacuums. It provides a reusable protocol layer for applications such as the
@@ -351,5 +351,13 @@ This independent project builds in part on protocol research by
 [TA2k](https://github.com/TA2k) in
 [ioBroker.botslab360](https://github.com/TA2k/ioBroker.botslab360). See
 [ATTRIBUTION.md](ATTRIBUTION.md) for details.
+
+## AI-Assisted Development
+
+This project is developed with the assistance of OpenAI Codex. AI tools support
+code development, refactoring, testing, and documentation.
+
+AI-generated contributions are reviewed and validated before being incorporated
+into the project.
 
 This project is licensed under the [MIT License](LICENSE).
