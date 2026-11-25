@@ -207,6 +207,47 @@ carpet-related value, not a verified room sweep/mop selector. New code must not
 use the deprecated `RoomCleaningMode` compatibility enum or
 `RoomCleaningSettings.mode`; attempts to set the latter are rejected.
 
+## Status request time budget
+
+`get_status(device_id, timeout=30.0)` retains its existing behaviour. The
+`timeout` controls the wait for the matching status push after registration
+and the HTTP request. Callers can explicitly opt into an overall deadline and
+bounded recovery with `get_status(device_id, total_timeout=125.0)`.
+
+The total time budget includes TCP setup, profile fallback, HTTP, the status
+push, and any recovery. The library cancels outstanding work at the deadline
+and waits for cleanup, so the call may return after the deadline. At most one
+additional attempt is allowed. A transient push registration timeout, HTTP
+read timeout, or matching status push timeout can use that attempt if enough
+time remains for the configured waits. Session expiry uses the same recovery
+slot for reauthentication. Each attempt uses a fresh task ID and push channel.
+
+The reserve for a transient retry is 15 seconds per configured push profile
+plus the configured HTTP timeout and the status push timeout. TCP setup and
+HTTP phases may take additional time, which the overall deadline bounds.
+Robot commands and other read operations retain their existing behaviour.
+
+With the default phase timeouts, this reserve is 75 seconds with one profile
+or 90 seconds with two. A 120-second deadline leaves about 89 seconds after a
+30–31 second failure, so it can skip a retry when two profiles are configured.
+The reserve is an admission check for the configured waits, not a prediction
+of how long a successful attempt will take.
+
+For a controlled Home Assistant trial, 125 seconds per robot covers that
+observed failure range with either profile count. An earlier profile fallback
+on the first attempt can still use up the margin. Home Assistant schedules
+its regular poll roughly one interval after the previous refresh finishes.
+With a 60-second interval, a refresh using the full 125-second budget can
+therefore start the next poll about 185 seconds after the previous start,
+plus cleanup. For entries with multiple robots, the coordinator currently
+polls them in sequence, so this per-robot budget can accumulate. Evaluate
+recovery rate and refresh latency before enabling it broadly.
+
+DEBUG logs from `botslab360.client` record retry decisions and successful
+recovery. Deadline expiry raises `ApiError` with phase `timeout` and the
+fixed message `Status retrieval exceeded its total time budget`.
+
+
 ## Occupancy grids
 
 The public API can fetch the vendor occupancy grid independently of room

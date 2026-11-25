@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import math
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
@@ -59,6 +60,7 @@ from .protocol import (
     DEFAULT_PUSH_HOST,
     DEFAULT_PUSH_PORT,
     NETWORK_INFO_TYPE,
+    PUSH_READY_TIMEOUT,
     STATUS_INFO_TYPE,
     PushClient,
 )
@@ -188,6 +190,24 @@ def _device_id(device: Device | str) -> str:
     if not isinstance(device_id, str) or not device_id:
         raise ValueError("device must contain a non-empty id")
     return device_id
+
+
+def _status_retry_reason(error: ApiError) -> str | None:
+    """Recognize the three observed transient failures without logging their text."""
+    if isinstance(error, (AuthenticationError, InvalidSessionError)):
+        return None
+    if error.phase == "timeout" and isinstance(error.__cause__, TimeoutError):
+        if error.args == ("Timed out waiting for push registration",):
+            return "push_registration_timeout"
+        if error.args == ("Timed out waiting for robot status",):
+            return "status_push_timeout"
+    if (
+        error.phase == "transport"
+        and isinstance(error.__cause__, httpx.ReadTimeout)
+        and error.args == ("Robot status request failed",)
+    ):
+        return "http_read_timeout"
+    return None
 
 
 class Botslab360Client:
@@ -554,8 +574,9 @@ class Botslab360Client:
         device_id: str,
         *,
         timeout: float = 30.0,
+        total_timeout: float | None = None,
     ) -> RobotStatus:
-        """Request and await one current status push for a robot."""
+        """Request status, optionally limiting the entire operation and recovery."""
 
         if self._session is None:
             raise AuthenticationError(
@@ -565,14 +586,77 @@ class Botslab360Client:
         if not isinstance(device_id, str) or not device_id:
             raise ValueError("device_id must be a non-empty string")
 
-        task_id = str(uuid4())
-        return await self._with_session_refresh(
-            lambda: self._get_status_once(
-                device_id=device_id,
-                task_id=task_id,
-                timeout=timeout,
+        if total_timeout is None:
+            task_id = str(uuid4())
+            return await self._with_session_refresh(
+                lambda: self._get_status_once(
+                    device_id=device_id, task_id=task_id, timeout=timeout
+                )
             )
+
+        async def attempt() -> RobotStatus:
+            return await self._get_status_once(
+                device_id=device_id, task_id=str(uuid4()), timeout=timeout
+            )
+
+        if isinstance(total_timeout, bool) or not isinstance(
+            total_timeout, (int, float)
+        ):
+            raise TypeError("total_timeout must be a number")
+        if not math.isfinite(total_timeout) or total_timeout <= 0:
+            raise ValueError("total_timeout must be finite and positive")
+
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + total_timeout
+        task = asyncio.create_task(
+            self._get_status_with_budget(attempt, timeout, deadline)
         )
+        try:
+            done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
+            if done:
+                return task.result()
+        except asyncio.CancelledError:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            raise
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        _LOGGER.debug("Status recovery: total deadline exceeded")
+        raise ApiError(
+            "Status retrieval exceeded its total time budget", phase="timeout"
+        )
+
+    async def _get_status_with_budget(
+        self,
+        attempt: Callable[[], Awaitable[RobotStatus]],
+        timeout: float,
+        deadline: float,
+    ) -> RobotStatus:
+        try:
+            return await attempt()
+        except InvalidSessionError:
+            _LOGGER.debug("Status recovery: refreshing session")
+            await self.authenticate()
+        except ApiError as error:
+            reason = _status_retry_reason(error)
+            if reason is None:
+                raise
+            # Reserve the configured waits for a complete attempt, including
+            # alternate profile registration. The deadline also covers TCP
+            # setup, HTTP phase combinations, session refresh and cleanup.
+            reserve = (
+                len(self._push_profiles) * PUSH_READY_TIMEOUT
+                + self._request_timeout
+                + timeout
+            )
+            remaining = deadline - asyncio.get_running_loop().time()
+            if remaining < reserve:
+                _LOGGER.debug("Status recovery: reason=%s retry=skipped budget", reason)
+                raise
+            _LOGGER.debug("Status recovery: reason=%s retry=started", reason)
+        result = await attempt()
+        _LOGGER.debug("Status recovery: result=succeeded")
+        return result
 
     @asynccontextmanager
     async def _push_connection(self) -> AsyncIterator[PushClient]:

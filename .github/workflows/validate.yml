@@ -1,0 +1,92 @@
+name: Validate
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python 3.10
+        id: python-310
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.10"
+
+      - name: Install test dependencies for Python 3.10
+        run: |
+          "${{ steps.python-310.outputs.python-path }}" -m pip install --upgrade pip
+          "${{ steps.python-310.outputs.python-path }}" -m pip install -e ".[test]"
+
+      - name: Run tests on Python 3.10
+        run: >-
+          "${{ steps.python-310.outputs.python-path }}"
+          -m pytest -p no:cacheprovider
+
+      - name: Compile sources on Python 3.10
+        run: >-
+          "${{ steps.python-310.outputs.python-path }}"
+          -m compileall -q src tests diagnostics
+
+      - name: Set up Python 3.14
+        id: python-314
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install test dependencies for Python 3.14
+        run: |
+          "${{ steps.python-314.outputs.python-path }}" -m pip install --upgrade pip
+          "${{ steps.python-314.outputs.python-path }}" -m pip install -e ".[test]" ruff
+
+      - name: Run Ruff
+        run: ruff check .
+
+      - name: Check Ruff formatting
+        run: ruff format --check .
+
+      - name: Run tests on Python 3.14
+        run: >-
+          "${{ steps.python-314.outputs.python-path }}"
+          -m pytest -p no:cacheprovider
+
+      - name: Compile sources on Python 3.14
+        run: >-
+          "${{ steps.python-314.outputs.python-path }}"
+          -m compileall -q src tests diagnostics
+
+  validate-package:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+
+      - name: Install packaging tools
+        run: python -m pip install --upgrade pip build twine
+
+      - name: Build distributions
+        run: python -m build
+
+      - name: Check distributions
+        run: python -m twine check dist/*
+
+      - name: Install wheel
+        run: python -m pip install --force-reinstall dist/*.whl
+
+      - name: Import installed package
+        run: python -c "import botslab360"
