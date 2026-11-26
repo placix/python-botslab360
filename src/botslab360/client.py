@@ -201,7 +201,9 @@ def _status_retry_reason(error: ApiError) -> str | None:
         return None
     if isinstance(error, _PushRegistrationClosed):
         return "push_registration_eof"
-    if error.phase == "timeout" and isinstance(error.__cause__, TimeoutError):
+    if error.phase == "timeout" and isinstance(
+        error.__cause__, (TimeoutError, asyncio.TimeoutError)
+    ):
         if error.args == ("Timed out waiting for push registration",):
             return "push_registration_timeout"
         if error.args == ("Timed out waiting for robot status",):
