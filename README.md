@@ -216,11 +216,15 @@ bounded recovery with `get_status(device_id, total_timeout=125.0)`.
 
 The total time budget includes TCP setup, profile fallback, HTTP, the status
 push, and any recovery. The library cancels outstanding work at the deadline
-and waits for cleanup, so the call may return after the deadline. At most one
-additional attempt is allowed. A transient push registration timeout, HTTP
-read timeout, or matching status push timeout can use that attempt if enough
-time remains for the configured waits. Session expiry uses the same recovery
+and waits for cleanup, so the call may return after the deadline. A transient
+push registration timeout, remote EOF during registration, HTTP read timeout,
+or matching status push timeout can trigger recovery if the configured waits
+fit in the remaining budget. Registration failures wait 250 ms before the
+first retry. If the first retry reaches remote EOF before registration, one
+final attempt may follow a 500 ms delay. Session expiry uses a single recovery
 slot for reauthentication. Each attempt uses a fresh task ID and push channel.
+Budgeted status calls on the same client are serialized, including recovery.
+Time spent waiting for another status call counts against the caller's budget.
 
 The reserve for a transient retry is 15 seconds per configured push profile
 plus the configured HTTP timeout and the status push timeout. TCP setup and
@@ -243,8 +247,8 @@ plus cleanup. For entries with multiple robots, the coordinator currently
 polls them in sequence, so this per-robot budget can accumulate. Evaluate
 recovery rate and refresh latency before enabling it broadly.
 
-DEBUG logs from `botslab360.client` record retry decisions and successful
-recovery. Deadline expiry raises `ApiError` with phase `timeout` and the
+DEBUG logs from `botslab360.client` record attempts, retry decisions, delays
+and remaining budget. `botslab360.protocol` logs push cleanup duration. Deadline expiry raises `ApiError` with phase `timeout` and the
 fixed message `Status retrieval exceeded its total time budget`.
 
 

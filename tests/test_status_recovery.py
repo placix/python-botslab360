@@ -1,17 +1,20 @@
 """Offline tests for opt-in status recovery."""
 
 import asyncio
+import base64
+import json
 import logging
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 from urllib.parse import parse_qs
 
 import httpx
 import pytest
-from test_protocol import synthetic_event
+from test_protocol import application_packet, bind_ack, synthetic_event
 from test_push_profiles import make_client
 from test_status import SID, Q, T, login_response, run
 
 import botslab360.client as client_module
+import botslab360.protocol as protocol_module
 from botslab360 import (
     ApiError,
     AuthenticationError,
@@ -286,7 +289,7 @@ def test_observed_status_failure_budget(monkeypatch, kind, elapsed, profiles, bu
             client = make_client(http, **kwargs)
             assert len(client._push_profiles) == profiles
             loop = asyncio.get_running_loop()
-            start = loop.time()
+            monotonic = loop.time
             offset = 0.0
             attempts = 0
             error = transient_error(kind)
@@ -301,7 +304,7 @@ def test_observed_status_failure_budget(monkeypatch, kind, elapsed, profiles, bu
                 return expected
 
             def clock():
-                return start + offset
+                return monotonic() + offset
 
             # Advance elapsed time only when the first attempt fails, without
             # blocking the test or changing the configured phase timeouts.
@@ -322,5 +325,346 @@ def test_observed_status_failure_budget(monkeypatch, kind, elapsed, profiles, bu
                         await client.get_status("robot", total_timeout=budget)
                     assert raised.value is error
                     assert attempts == 1
+
+    run(scenario())
+
+
+@pytest.mark.parametrize("final_result", ["success", "eof", "no_budget"])
+def test_registration_timeout_then_retry_eof_uses_fresh_stream(
+    monkeypatch, caplog, final_result
+):
+    async def scenario():
+        readers = []
+        closed = []
+        delays = []
+        requests = []
+        paths = []
+        clock = asyncio.get_running_loop()
+        wall_time = clock.time
+        elapsed = 0.0
+
+        class Writer:
+            def __init__(self, index):
+                self.index = index
+
+            def write(self, data):
+                if data[2:4] == b"\x00\x02":
+                    if self.index == 1 or final_result == "eof" and self.index == 2:
+                        readers[self.index].feed_eof()
+                    if self.index == 2 and final_result == "success":
+                        readers[self.index].feed_data(bind_ack())
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                closed.append(self.index)
+
+            async def wait_closed(self):
+                pass
+
+        async def open_connection(*args):
+            assert len(closed) == len(readers)
+            index = len(readers)
+            readers.append(asyncio.StreamReader())
+            return readers[-1], Writer(index)
+
+        wait_until_ready = protocol_module.PushClient.wait_until_ready
+
+        async def wait(push, *, timeout):
+            nonlocal elapsed
+            if len(readers) == 1:
+                if final_result == "no_budget":
+                    elapsed = 14.6
+                timeout = 0
+            return await wait_until_ready(push, timeout=timeout)
+
+        sleep = asyncio.sleep
+
+        async def backoff(delay):
+            if delay not in (0.25, 0.5):
+                await sleep(delay)
+                return
+            nonlocal elapsed
+            assert len(closed) == len(readers)
+            delays.append(delay)
+            elapsed += delay
+
+        def handler(request):
+            paths.append(request.url.path)
+            if request.url.path == "/common/user/login":
+                return login_response()
+            requests.append(request)
+            task = parse_qs(request.content.decode())["taskid"][0]
+            packet, _ = application_packet(
+                {
+                    "encrypt": 0,
+                    "data": base64.b64encode(
+                        json.dumps(
+                            dict(synthetic_event(), sn="robot", taskid=task)
+                        ).encode()
+                    ).decode(),
+                }
+            )
+            # The timeout socket receives a late event. Only the event on
+            # the newly registered stream may complete the status request.
+            readers[0].feed_data(packet)
+            readers[-1].feed_data(packet)
+            return httpx.Response(200, json={"errno": 0})
+
+        monkeypatch.setattr(protocol_module.asyncio, "open_connection", open_connection)
+        monkeypatch.setattr(protocol_module.PushClient, "wait_until_ready", wait)
+        monkeypatch.setattr(client_module.asyncio, "sleep", backoff)
+        monkeypatch.setattr(clock, "time", lambda: wall_time() + elapsed)
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+            client = Botslab360Client(Q, T, http_client=http, push_port=1234)
+            await client.authenticate()
+            if final_result == "success":
+                status = await client.get_status("robot", total_timeout=125)
+                assert status.battery == 85
+            else:
+                with pytest.raises(ApiError, match="Push connection closed"):
+                    await client.get_status(
+                        "robot",
+                        total_timeout=90 if final_result == "no_budget" else 125,
+                    )
+
+        expected_attempts = 2 if final_result == "no_budget" else 3
+        assert closed == list(range(expected_attempts))
+        assert len(requests) == (final_result == "success")
+        assert delays == ([0.25] if final_result == "no_budget" else [0.25, 0.5])
+        assert paths.count("/common/user/login") == 1
+
+    with caplog.at_level(logging.DEBUG, logger="botslab360"):
+        run(scenario())
+    assert all(
+        record.levelno == logging.DEBUG
+        for record in caplog.records
+        if record.name.startswith("botslab360")
+    )
+    assert "reason=push_registration_eof phase=transport" in caplog.text
+    assert "Push cleanup: elapsed_ms=" in caplog.text
+    assert ("result=succeeded" in caplog.text) == (final_result == "success")
+    assert ("retry=skipped budget" in caplog.text) == (final_result == "no_budget")
+
+
+def test_status_recovery_is_serial_and_shutdown_cancels_pending_work(monkeypatch):
+    async def scenario():
+        started = asyncio.Event()
+        cleaned = asyncio.Event()
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: login_response())
+        ) as http:
+            client = Botslab360Client(Q, T, http_client=http)
+            await client.authenticate()
+
+            async def attempt(**kwargs):
+                try:
+                    started.set()
+                    await asyncio.Future()
+                finally:
+                    await asyncio.sleep(0)
+                    cleaned.set()
+
+            mock = AsyncMock(side_effect=attempt)
+            monkeypatch.setattr(client, "_get_status_once", mock)
+            first = asyncio.create_task(client.get_status("robot", total_timeout=125))
+            await started.wait()
+            second = asyncio.create_task(client.get_status("other", total_timeout=125))
+            await asyncio.sleep(0)
+            await asyncio.sleep(0)
+            mock.assert_awaited_once()
+            await client.close()
+            assert cleaned.is_set()
+            for operation in (first, second):
+                with pytest.raises(asyncio.CancelledError):
+                    await operation
+            assert not http.is_closed
+            mock.assert_awaited_once()
+
+    run(scenario())
+
+
+def test_close_during_open_disposes_late_stream_and_prevents_duplicate_connect(
+    monkeypatch,
+):
+    async def scenario():
+        entered = asyncio.Event()
+        release = asyncio.Event()
+        writer = AsyncMock()
+        writer.close = Mock()
+        writer.write = Mock()
+
+        async def opening(*args):
+            entered.set()
+            await release.wait()
+            return asyncio.StreamReader(), writer
+
+        open_connection = AsyncMock(side_effect=opening)
+        monkeypatch.setattr(protocol_module.asyncio, "open_connection", open_connection)
+        push = protocol_module.PushClient(SID, "synthetic-key")
+        connection = asyncio.create_task(push.connect())
+        await entered.wait()
+        with pytest.raises(ApiError, match="already connected"):
+            await push.connect()
+        await push.close()
+        release.set()
+        with pytest.raises(ApiError, match="Push connection closed") as raised:
+            await connection
+        assert type(raised.value) is ApiError
+        open_connection.assert_awaited_once()
+        writer.close.assert_called_once()
+        writer.write.assert_not_called()
+        writer.wait_closed.assert_awaited_once()
+
+    run(scenario())
+
+
+def test_reopening_same_push_client_ignores_late_ack_from_previous_stream(monkeypatch):
+    async def scenario():
+        first = asyncio.StreamReader()
+        second = asyncio.StreamReader()
+
+        writers = [AsyncMock(), AsyncMock()]
+        for writer in writers:
+            writer.close = Mock()
+            writer.write = Mock()
+        monkeypatch.setattr(
+            protocol_module.asyncio,
+            "open_connection",
+            AsyncMock(side_effect=[(first, writers[0]), (second, writers[1])]),
+        )
+        push = protocol_module.PushClient(SID, "synthetic-key")
+        first_bind_sent = asyncio.Event()
+        writers[0].write.side_effect = lambda _: first_bind_sent.set()
+        first_connect = asyncio.create_task(push.connect())
+        await first_bind_sent.wait()
+        await push.close()
+        with pytest.raises(ApiError, match="Push connection closed"):
+            await first_connect
+        assert push._reader_task is None
+        assert push._heartbeat_task is None
+
+        registered = asyncio.Event()
+        writers[1].write.side_effect = lambda _: registered.set()
+        connect = asyncio.create_task(push.connect())
+        await registered.wait()
+        first.feed_data(bind_ack())
+        await asyncio.sleep(0)
+        assert not connect.done()
+        second.feed_data(bind_ack())
+        await connect
+        await push.close()
+        for writer in writers:
+            writer.wait_closed.assert_awaited_once()
+
+    run(scenario())
+
+
+def test_cancel_during_registration_backoff_does_not_open_another_push(monkeypatch):
+    async def scenario():
+        backoff_entered = asyncio.Event()
+        backoff_exited = asyncio.Event()
+        sleep = asyncio.sleep
+
+        async def backoff(delay):
+            if delay != 0.25:
+                return await sleep(delay)
+            try:
+                backoff_entered.set()
+                await asyncio.Future()
+            finally:
+                backoff_exited.set()
+
+        monkeypatch.setattr(client_module.asyncio, "sleep", backoff)
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: login_response())
+        ) as http:
+            client = Botslab360Client(Q, T, http_client=http)
+            await client.authenticate()
+            attempt = AsyncMock(side_effect=transient_error("push registration"))
+            monkeypatch.setattr(client, "_get_status_once", attempt)
+            status = asyncio.create_task(client.get_status("robot", total_timeout=125))
+            await backoff_entered.wait()
+            status.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await status
+            assert backoff_exited.is_set()
+            attempt.assert_awaited_once()
+
+    run(scenario())
+
+
+def test_queued_status_calls_expire_without_starting_transport(monkeypatch):
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: login_response())
+        ) as http:
+            client = Botslab360Client(Q, T, http_client=http)
+            await client.authenticate()
+            attempt = AsyncMock()
+            monkeypatch.setattr(client, "_get_status_once", attempt)
+
+            async with client._status_recovery_lock:
+                calls = [
+                    client.get_status(f"robot-{index}", total_timeout=0.02)
+                    for index in range(5)
+                ]
+                results = await asyncio.gather(*calls, return_exceptions=True)
+                for result in results:
+                    assert isinstance(result, ApiError)
+                    assert result.phase == "timeout"
+
+            await asyncio.sleep(0)
+            attempt.assert_not_awaited()
+            assert not client._status_recovery_tasks
+            assert (
+                await client.get_status("robot", total_timeout=125)
+                is attempt.return_value
+            )
+
+    run(scenario())
+
+
+def test_status_checks_expired_budget_when_serialization_lock_is_released(monkeypatch):
+    async def scenario():
+        async with httpx.AsyncClient(
+            transport=httpx.MockTransport(lambda _: login_response())
+        ) as http:
+            client = Botslab360Client(Q, T, http_client=http)
+            await client.authenticate()
+            attempt = AsyncMock()
+            monkeypatch.setattr(client, "_get_status_once", attempt)
+
+            loop = asyncio.get_running_loop()
+            monotonic = loop.time
+            offset = 0
+            monkeypatch.setattr(loop, "time", lambda: monotonic() + offset)
+
+            waiting = asyncio.Event()
+
+            async def wait_for_worker(tasks, *, timeout):
+                # Give the worker the first turn when the lock and deadline are
+                # both ready, before the caller handles its timeout.
+                waiting.set()
+                worker = next(iter(tasks))
+                try:
+                    await worker
+                except ApiError:
+                    pass
+                return tasks, set()
+
+            monkeypatch.setattr(client_module.asyncio, "wait", wait_for_worker)
+            async with client._status_recovery_lock:
+                status = asyncio.create_task(
+                    client.get_status("robot", total_timeout=1)
+                )
+                await waiting.wait()
+                offset = 2
+
+            with pytest.raises(ApiError, match="total time budget"):
+                await status
+            attempt.assert_not_awaited()
+            assert not client._status_recovery_tasks
 
     run(scenario())

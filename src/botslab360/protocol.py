@@ -6,6 +6,7 @@ import asyncio
 import base64
 import ipaddress
 import json
+import logging
 import re
 import time
 from contextlib import suppress
@@ -37,6 +38,17 @@ PUSH_BIND_ACK_OPCODE = 6
 PUSH_MESSAGE_OPCODE = 3
 PUSH_READY_TIMEOUT = 15.0
 _MAC_PATTERN = re.compile(r"(?:[0-9a-fA-F]{2}[:-]){5}[0-9a-fA-F]{2}|[0-9a-fA-F]{12}")
+
+
+_LOGGER = logging.getLogger(__name__)
+
+
+class _PushConnectionClosed(ApiError):
+    """The remote push stream reached EOF."""
+
+
+class _PushRegistrationClosed(ApiError):
+    """The remote push stream reached EOF during registration."""
 
 
 def _protocol_error(message: str, *, phase: str = "protocol") -> ApiError:
@@ -459,6 +471,9 @@ class PushClient:
         self._client_version = client_version
         self._heartbeat_timeout = heartbeat_timeout
         self._heartbeat_interval = heartbeat_interval
+        self._connecting = False
+        self._close_requested = False
+        self._close_lock = asyncio.Lock()
         self._reader: asyncio.StreamReader | None = None
         self._writer: asyncio.StreamWriter | None = None
         self._heartbeat_task: asyncio.Task[None] | None = None
@@ -514,8 +529,16 @@ class PushClient:
         }
 
     async def connect(self) -> None:
-        if self._reader is not None or self._writer is not None:
+        if self._connecting or self._close_lock.locked() or self._writer is not None:
             raise _protocol_error("Push client is already connected", phase="transport")
+        self._connecting = True
+        try:
+            await self._connect()
+        finally:
+            self._connecting = False
+
+    async def _connect(self) -> None:
+        self._close_requested = False
         self._reader_started_event = asyncio.Event()
         self._ready_event = asyncio.Event()
         self._reader_error = None
@@ -532,9 +555,13 @@ class PushClient:
                 self._host,
                 self._port,
             )
+            if self._close_requested:
+                raise _protocol_error("Push connection closed", phase="transport")
             self._tcp_connected = True
             self._reader_task = asyncio.create_task(self._read_loop())
             await self._reader_started_event.wait()
+            if self._close_requested:
+                raise _protocol_error("Push connection closed", phase="transport")
             timestamp = int(time.time() * 1000)
             handshake = (
                 b"\x00\x05\x00\x02"
@@ -552,6 +579,11 @@ class PushClient:
             self._handshake_sent = True
             await self.wait_until_ready(timeout=PUSH_READY_TIMEOUT)
             self._heartbeat_task = asyncio.create_task(self._heartbeat())
+        except _PushConnectionClosed as exc:
+            await self.close()
+            raise _PushRegistrationClosed(
+                "Push connection closed", phase="transport"
+            ) from exc
         except ApiError:
             await self.close()
             raise
@@ -593,7 +625,7 @@ class PushClient:
                     )
                 chunk = await self._reader.read(65536)
                 if not chunk:
-                    raise _protocol_error(
+                    raise _PushConnectionClosed(
                         "Push connection closed",
                         phase="transport",
                     )
@@ -834,31 +866,41 @@ class PushClient:
         return True
 
     async def close(self) -> None:
-        if self._reader_task is not None:
-            close_error = _protocol_error(
-                "Push connection closed",
-                phase="transport",
-            )
+        self._close_requested = True
+        async with self._close_lock:
+            if self._writer is None:
+                return
+            started = asyncio.get_running_loop().time()
+            close_error = _protocol_error("Push connection closed", phase="transport")
             self._reader_error = close_error
+            self._reader_started_event.set()
             self._ready_event.set()
             self._application_frames.put_nowait(close_error)
-        if self._heartbeat_task is not None:
-            self._heartbeat_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._heartbeat_task
-            self._heartbeat_task = None
-        if self._reader_task is not None:
-            self._reader_task.cancel()
-            with suppress(asyncio.CancelledError):
-                await self._reader_task
-            self._reader_task = None
-        if self._writer is not None:
-            self._writer.close()
-            with suppress(OSError):
-                await self._writer.wait_closed()
-        self._reader = None
-        self._writer = None
-        self._ready = False
+            self._ready = False
+            tasks = tuple(
+                task
+                for task in (self._heartbeat_task, self._reader_task)
+                if task is not None
+            )
+            self._heartbeat_task = self._reader_task = None
+            writer = self._writer
+            self._reader = self._writer = None
+            for task in tasks:
+                task.cancel()
+            try:
+                if tasks:
+                    await asyncio.wait(tasks)
+                for task in tasks:
+                    if not task.cancelled():
+                        task.result()
+            finally:
+                writer.close()
+                with suppress(OSError):
+                    await writer.wait_closed()
+                _LOGGER.debug(
+                    "Push cleanup: elapsed_ms=%.1f",
+                    (asyncio.get_running_loop().time() - started) * 1000,
+                )
 
     async def __aenter__(self) -> PushClient:
         await self.connect()

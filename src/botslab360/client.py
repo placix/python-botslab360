@@ -63,6 +63,7 @@ from .protocol import (
     PUSH_READY_TIMEOUT,
     STATUS_INFO_TYPE,
     PushClient,
+    _PushRegistrationClosed,
 )
 from .quc import ANDROID_360_PROFILE, BOTSLAB_CLOUD_PROFILE, QucAuth
 from .rooms import (
@@ -80,6 +81,8 @@ ANDROID_CHANNEL_ID = "Overseas"
 ANDROID_DEVICE_MANUFACTURER = "Google"
 ANDROID_DEVICE_MODEL = "sdk_gphone64_x86_64"
 ANDROID_ROOM_USER_AGENT = "okhttp/4.10.0"
+_STATUS_REGISTRATION_BACKOFF = 0.25
+_STATUS_REGISTRATION_FINAL_BACKOFF = 0.5
 _ResultT = TypeVar("_ResultT")
 _LOGGER = logging.getLogger(__name__)
 
@@ -193,9 +196,11 @@ def _device_id(device: Device | str) -> str:
 
 
 def _status_retry_reason(error: ApiError) -> str | None:
-    """Recognize the three observed transient failures without logging their text."""
+    """Recognize eligible transient failures without logging their text."""
     if isinstance(error, (AuthenticationError, InvalidSessionError)):
         return None
+    if isinstance(error, _PushRegistrationClosed):
+        return "push_registration_eof"
     if error.phase == "timeout" and isinstance(error.__cause__, TimeoutError):
         if error.args == ("Timed out waiting for push registration",):
             return "push_registration_timeout"
@@ -256,6 +261,8 @@ class Botslab360Client:
         push_profile_name: str = "legacy",
     ) -> None:
         self._request_timeout = timeout
+        self._status_recovery_lock = asyncio.Lock()
+        self._status_recovery_tasks: dict[asyncio.Task[RobotStatus], bool] = {}
         self._http_client = (
             http_client
             if http_client is not None
@@ -607,56 +614,116 @@ class Botslab360Client:
             raise ValueError("total_timeout must be finite and positive")
 
         loop = asyncio.get_running_loop()
-        deadline = loop.time() + total_timeout
-        task = asyncio.create_task(
-            self._get_status_with_budget(attempt, timeout, deadline)
-        )
+        started = loop.time()
+        deadline = started + total_timeout
+
+        def deadline_exceeded() -> ApiError:
+            _LOGGER.debug(
+                "Status recovery: total deadline exceeded elapsed_s=%.2f",
+                loop.time() - started,
+            )
+            return ApiError(
+                "Status retrieval exceeded its total time budget", phase="timeout"
+            )
+
+        async def recover() -> RobotStatus:
+            async with self._status_recovery_lock:
+                if loop.time() >= deadline:
+                    raise deadline_exceeded()
+                return await self._get_status_with_budget(
+                    attempt, timeout, started, deadline
+                )
+
+        task = asyncio.create_task(recover())
+        self._status_recovery_tasks[task] = True
         try:
             done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
             if done:
                 return task.result()
-        except asyncio.CancelledError:
+            raise deadline_exceeded()
+        finally:
+            if not task.done():
+                self._cancel_status_recovery(task)
+                await asyncio.shield(asyncio.gather(task, return_exceptions=True))
+            self._status_recovery_tasks.pop(task, None)
+
+    def _cancel_status_recovery(self, task: asyncio.Task[RobotStatus]) -> None:
+        if self._status_recovery_tasks.get(task):
+            self._status_recovery_tasks[task] = False
             task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-            raise
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
-        _LOGGER.debug("Status recovery: total deadline exceeded")
-        raise ApiError(
-            "Status retrieval exceeded its total time budget", phase="timeout"
-        )
 
     async def _get_status_with_budget(
         self,
         attempt: Callable[[], Awaitable[RobotStatus]],
         timeout: float,
+        started: float,
         deadline: float,
     ) -> RobotStatus:
-        try:
-            return await attempt()
-        except InvalidSessionError:
-            _LOGGER.debug("Status recovery: refreshing session")
-            await self.authenticate()
-        except ApiError as error:
-            reason = _status_retry_reason(error)
-            if reason is None:
-                raise
-            # Reserve the configured waits for a complete attempt, including
-            # alternate profile registration. The deadline also covers TCP
-            # setup, HTTP phase combinations, session refresh and cleanup.
-            reserve = (
-                len(self._push_profiles) * PUSH_READY_TIMEOUT
-                + self._request_timeout
-                + timeout
-            )
-            remaining = deadline - asyncio.get_running_loop().time()
-            if remaining < reserve:
-                _LOGGER.debug("Status recovery: reason=%s retry=skipped budget", reason)
-                raise
-            _LOGGER.debug("Status recovery: reason=%s retry=started", reason)
-        result = await attempt()
-        _LOGGER.debug("Status recovery: result=succeeded")
-        return result
+        clock = asyncio.get_running_loop().time
+        session_refreshed = False
+
+        for attempt_number in (1, 2, 3):
+            try:
+                result = await attempt()
+            except ApiError as error:
+                reason = _status_retry_reason(error)
+                if attempt_number == 1 and isinstance(error, InvalidSessionError):
+                    _LOGGER.debug("Status recovery: refreshing session")
+                    await self.authenticate()
+                    session_refreshed = True
+                    continue
+
+                backoff = 0.0
+                if attempt_number == 1 and reason in {
+                    "push_registration_timeout",
+                    "push_registration_eof",
+                }:
+                    backoff = _STATUS_REGISTRATION_BACKOFF
+                elif attempt_number == 2 and reason == "push_registration_eof":
+                    backoff = _STATUS_REGISTRATION_FINAL_BACKOFF
+
+                # The third attempt is reserved for a remote EOF before push
+                # registration on the first retry. Keep the original reserve
+                # for a full status attempt, including alternate profiles.
+                remaining = deadline - clock()
+                eligible = reason is not None and (
+                    attempt_number == 1
+                    or (
+                        attempt_number == 2
+                        and reason == "push_registration_eof"
+                        and not session_refreshed
+                    )
+                )
+                retry = eligible and remaining >= (
+                    len(self._push_profiles) * PUSH_READY_TIMEOUT
+                    + self._request_timeout
+                    + timeout
+                    + backoff
+                )
+                _LOGGER.debug(
+                    "Status recovery: attempt=%d reason=%s phase=%s retry=%s "
+                    "backoff_s=%.2f remaining_s=%.2f elapsed_s=%.2f",
+                    attempt_number,
+                    reason or type(error).__name__,
+                    error.phase,
+                    "started" if retry else "skipped budget" if eligible else "stopped",
+                    backoff if retry else 0.0,
+                    remaining,
+                    clock() - started,
+                )
+                if not retry:
+                    raise
+                if backoff:
+                    await asyncio.sleep(backoff)
+            else:
+                if attempt_number > 1:
+                    _LOGGER.debug(
+                        "Status recovery: attempt=%d result=succeeded elapsed_s=%.2f",
+                        attempt_number,
+                        clock() - started,
+                    )
+                return result
+        raise AssertionError("Status recovery attempts exhausted")
 
     @asynccontextmanager
     async def _push_connection(self) -> AsyncIterator[PushClient]:
@@ -1176,6 +1243,11 @@ class Botslab360Client:
             )
 
     async def close(self) -> None:
+        tasks = tuple(self._status_recovery_tasks)
+        for task in tasks:
+            self._cancel_status_recovery(task)
+        if tasks:
+            await asyncio.shield(asyncio.gather(*tasks, return_exceptions=True))
         if self._owns_http_client:
             await self._http_client.aclose()
 
