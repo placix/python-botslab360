@@ -681,11 +681,13 @@ class PushClient:
         except asyncio.CancelledError:
             raise
         except (ApiError, OSError) as exc:
-            self._reader_error = (
-                exc
-                if isinstance(exc, ApiError)
-                else _protocol_error("Push connection failed", phase="transport")
-            )
+            if isinstance(exc, ApiError):
+                self._reader_error = exc
+            else:
+                self._reader_error = _protocol_error(
+                    "Push connection failed", phase="transport"
+                )
+                self._reader_error.__cause__ = exc
             self._ready_event.set()
             self._application_frames.put_nowait(self._reader_error)
 

@@ -1,4 +1,25 @@
-# python-botslab360 0.7.6-beta.2
+# Changelog
+
+## 0.7.6-beta.3
+
+This prerelease extends opt-in recovery for robot status requests.
+
+- Recover from selected socket errors, connect timeouts and temporary DNS
+  resolution failures with 2- and 5-second backoffs.
+- Recover from HTTP 502, 503 and 504 with 1- and 3-second backoffs. Honour
+  a longer valid Retry-After for 503. Retry HTTP 429 at most once, only on
+  the first failure with a valid Retry-After that fits the deadline.
+- Keep a valid Retry-After from either HTTP 429 or 503 across status calls
+  on the same client. While the cooldown is active, later status polls
+  fail promptly without opening another push connection or sending HTTP.
+- Keep the original push registration and read-timeout recovery. Limit
+  mixed failures to three status attempts within the shared budget.
+- Keep permanent errors visible, including HTTP 500. Add transport
+  exception types, OS errno, HTTP status and retry decisions to DEBUG logs.
+- Preserve cancellation, per-client serialization and command behaviour.
+  Automatic retries continue to require a status budget.
+
+## 0.7.6-beta.2
 
 This prerelease is intended for testing recovery from intermittent transport
 failures during robot status retrieval.

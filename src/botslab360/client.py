@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import asyncio
+import errno
 import hashlib
 import json
 import logging
 import math
+import re
+import socket
+import ssl
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable, Mapping
 from contextlib import AsyncExitStack, asynccontextmanager, suppress
 from dataclasses import dataclass
+from datetime import timezone
+from email.utils import parsedate_to_datetime
 from numbers import Integral
 from typing import Any, TypeVar
 from urllib.parse import quote_plus
@@ -81,8 +88,33 @@ ANDROID_CHANNEL_ID = "Overseas"
 ANDROID_DEVICE_MANUFACTURER = "Google"
 ANDROID_DEVICE_MODEL = "sdk_gphone64_x86_64"
 ANDROID_ROOM_USER_AGENT = "okhttp/4.10.0"
-_STATUS_REGISTRATION_BACKOFF = 0.25
-_STATUS_REGISTRATION_FINAL_BACKOFF = 0.5
+_STATUS_RETRY_BACKOFFS = {
+    "push_registration_timeout": (0.25, None),
+    "push_registration_eof": (0.25, 0.5),
+    "status_push_timeout": (0.0, None),
+    "http_read_timeout": (0.0, None),
+    "network_error": (2.0, 5.0),
+    "connect_timeout": (2.0, 5.0),
+    "dns_temporary": (2.0, 5.0),
+    "http_server_error": (1.0, 3.0),
+    "http_rate_limited": (1.0, None),
+}
+_TRANSIENT_NETWORK_ERRNOS = frozenset(
+    getattr(errno, name)
+    for name in (
+        "EHOSTUNREACH",
+        "ENETUNREACH",
+        "ECONNREFUSED",
+        "ECONNRESET",
+        "ETIMEDOUT",
+        "WSAEHOSTUNREACH",
+        "WSAENETUNREACH",
+        "WSAECONNREFUSED",
+        "WSAECONNRESET",
+        "WSAETIMEDOUT",
+    )
+    if hasattr(errno, name)
+)
 _ResultT = TypeVar("_ResultT")
 _LOGGER = logging.getLogger(__name__)
 
@@ -195,12 +227,48 @@ def _device_id(device: Device | str) -> str:
     return device_id
 
 
-def _status_retry_reason(error: ApiError) -> str | None:
+def _status_deadline_exceeded(elapsed: float) -> ApiError:
+    _LOGGER.debug("Status recovery: total deadline exceeded elapsed_s=%.2f", elapsed)
+    return ApiError("Status retrieval exceeded its total time budget", phase="timeout")
+
+
+def _status_error_causes(error: ApiError) -> tuple[BaseException, ...]:
+    causes: list[BaseException] = []
+    current: BaseException = error
+    # Follow explicit causes before implicit context. Bound traversal even if
+    # a third-party transport supplies a cyclic exception chain.
+    for _ in range(12):
+        next_error = current.__cause__
+        if next_error is None and not current.__suppress_context__:
+            next_error = current.__context__
+        if (
+            next_error is None
+            or next_error is error
+            or any(next_error is cause for cause in causes)
+        ):
+            break
+        causes.append(next_error)
+        current = next_error
+    return tuple(causes)
+
+
+def _status_retry_reason(
+    error: ApiError, causes: tuple[BaseException, ...]
+) -> str | None:
     """Recognize eligible transient failures without logging their text."""
-    if isinstance(error, (AuthenticationError, InvalidSessionError)):
+    if any(
+        isinstance(cause, (AuthenticationError, InvalidSessionError))
+        for cause in (error, *causes)
+    ):
         return None
     if isinstance(error, _PushRegistrationClosed):
         return "push_registration_eof"
+    if error.phase == "http":
+        if error.status_code in {502, 503, 504}:
+            return "http_server_error"
+        if error.status_code == 429:
+            return "http_rate_limited"
+        return None
     if error.phase == "timeout" and isinstance(
         error.__cause__, (TimeoutError, asyncio.TimeoutError)
     ):
@@ -208,12 +276,69 @@ def _status_retry_reason(error: ApiError) -> str | None:
             return "push_registration_timeout"
         if error.args == ("Timed out waiting for robot status",):
             return "status_push_timeout"
-    if (
-        error.phase == "transport"
-        and isinstance(error.__cause__, httpx.ReadTimeout)
-        and error.args == ("Robot status request failed",)
+    if error.phase != "transport" or any(
+        isinstance(
+            cause, (httpx.ProtocolError, httpx.UnsupportedProtocol, ssl.SSLError)
+        )
+        for cause in causes
     ):
+        return None
+
+    # DNS codes belong to a different namespace than OS socket errno.
+    for cause in causes:
+        if isinstance(cause, socket.gaierror):
+            temporary_dns = {socket.EAI_AGAIN, getattr(socket, "WSATRY_AGAIN", None)}
+            return (
+                "dns_temporary"
+                if cause.errno is not None and cause.errno in temporary_dns
+                else None
+            )
+    if any(isinstance(cause, httpx.ReadTimeout) for cause in causes):
         return "http_read_timeout"
+    if any(
+        isinstance(cause, (httpx.ConnectTimeout, TimeoutError, asyncio.TimeoutError))
+        for cause in causes
+    ):
+        return "connect_timeout"
+    if any(
+        isinstance(cause, OSError)
+        and (
+            cause.errno in _TRANSIENT_NETWORK_ERRNOS
+            or getattr(cause, "winerror", None) in _TRANSIENT_NETWORK_ERRNOS
+            or isinstance(cause, (ConnectionRefusedError, ConnectionResetError))
+        )
+        for cause in causes
+    ):
+        return "network_error"
+    return None
+
+
+def _status_retry_after(causes: tuple[BaseException, ...]) -> float | None:
+    """Read Retry-After without retaining or emitting response headers."""
+    for cause in causes:
+        if isinstance(cause, httpx.HTTPStatusError):
+            value = cause.response.headers.get("Retry-After", "").strip()
+            if not value:
+                return None
+            if value.isascii() and value.isdecimal():
+                # Treat impractically large waits as exceeding the budget.
+                digits = value.lstrip("0")
+                return float(digits or "0") if len(digits) <= 10 else math.inf
+            try:
+                date = parsedate_to_datetime(value)
+                if date.tzinfo is None:
+                    # The obsolete asctime HTTP-date form implies UTC.
+                    if not re.fullmatch(
+                        r"[A-Za-z]{3} [A-Za-z]{3} [ 0-9][0-9] "
+                        r"[0-9]{2}:[0-9]{2}:[0-9]{2} [0-9]{4}",
+                        value,
+                    ):
+                        return None
+                    date = date.replace(tzinfo=timezone.utc)
+                return max(0.0, date.timestamp() - time.time())
+            except (OSError, OverflowError, TypeError, ValueError):
+                pass
+            return None
     return None
 
 
@@ -263,6 +388,7 @@ class Botslab360Client:
         push_profile_name: str = "legacy",
     ) -> None:
         self._request_timeout = timeout
+        self._status_cooldown: tuple[float, int] | None = None
         self._status_recovery_lock = asyncio.Lock()
         self._status_recovery_tasks: dict[asyncio.Task[RobotStatus], bool] = {}
         self._http_client = (
@@ -615,23 +741,13 @@ class Botslab360Client:
         if not math.isfinite(total_timeout) or total_timeout <= 0:
             raise ValueError("total_timeout must be finite and positive")
 
+        self._check_status_cooldown()
         loop = asyncio.get_running_loop()
         started = loop.time()
         deadline = started + total_timeout
 
-        def deadline_exceeded() -> ApiError:
-            _LOGGER.debug(
-                "Status recovery: total deadline exceeded elapsed_s=%.2f",
-                loop.time() - started,
-            )
-            return ApiError(
-                "Status retrieval exceeded its total time budget", phase="timeout"
-            )
-
         async def recover() -> RobotStatus:
             async with self._status_recovery_lock:
-                if loop.time() >= deadline:
-                    raise deadline_exceeded()
                 return await self._get_status_with_budget(
                     attempt, timeout, started, deadline
                 )
@@ -642,7 +758,7 @@ class Botslab360Client:
             done, _ = await asyncio.wait({task}, timeout=max(0, deadline - loop.time()))
             if done:
                 return task.result()
-            raise deadline_exceeded()
+            raise _status_deadline_exceeded(loop.time() - started)
         finally:
             if not task.done():
                 self._cancel_status_recovery(task)
@@ -665,55 +781,74 @@ class Botslab360Client:
         session_refreshed = False
 
         for attempt_number in (1, 2, 3):
+            # Check again after locking, sleeping, or refreshing the session.
+            if clock() >= deadline:
+                raise _status_deadline_exceeded(clock() - started)
             try:
                 result = await attempt()
             except ApiError as error:
-                reason = _status_retry_reason(error)
+                if error.phase == "http-cooldown":
+                    raise
+                causes = _status_error_causes(error)
+                reason = _status_retry_reason(error, causes)
                 if attempt_number == 1 and isinstance(error, InvalidSessionError):
                     _LOGGER.debug("Status recovery: refreshing session")
                     await self.authenticate()
                     session_refreshed = True
                     continue
 
-                backoff = 0.0
-                if attempt_number == 1 and reason in {
-                    "push_registration_timeout",
-                    "push_registration_eof",
-                }:
-                    backoff = _STATUS_REGISTRATION_BACKOFF
-                elif attempt_number == 2 and reason == "push_registration_eof":
-                    backoff = _STATUS_REGISTRATION_FINAL_BACKOFF
+                backoff = None
+                skipped = "permanent"
+                if reason is not None:
+                    skipped = "attempt_limit"
+                    if not session_refreshed and attempt_number <= 2:
+                        backoff = _STATUS_RETRY_BACKOFFS[reason][attempt_number - 1]
+                    if backoff is not None and error.status_code in {429, 503}:
+                        retry_after = _status_retry_after(causes)
+                        if retry_after is not None:
+                            backoff = max(backoff, retry_after)
+                        elif error.status_code == 429:
+                            backoff = None
+                            skipped = "missing_or_invalid_retry_after"
 
-                # The third attempt is reserved for a remote EOF before push
-                # registration on the first retry. Keep the original reserve
-                # for a full status attempt, including alternate profiles.
+                # Reserve a complete attempt including possible profile fallback.
                 remaining = deadline - clock()
-                eligible = reason is not None and (
-                    attempt_number == 1
-                    or (
-                        attempt_number == 2
-                        and reason == "push_registration_eof"
-                        and not session_refreshed
-                    )
-                )
-                retry = eligible and remaining >= (
+                planned_backoff = backoff
+                if backoff is not None and remaining < (
                     len(self._push_profiles) * PUSH_READY_TIMEOUT
                     + self._request_timeout
                     + timeout
                     + backoff
+                ):
+                    backoff = None
+                    skipped = "budget"
+
+                os_error = next(
+                    (cause for cause in reversed(causes) if isinstance(cause, OSError)),
+                    None,
                 )
                 _LOGGER.debug(
                     "Status recovery: attempt=%d reason=%s phase=%s retry=%s "
-                    "backoff_s=%.2f remaining_s=%.2f elapsed_s=%.2f",
+                    "skip_reason=%s backoff_s=%.2f remaining_s=%.2f elapsed_s=%.2f "
+                    "cause_chain=%s os_errno=%s winerror=%s http_status=%s",
                     attempt_number,
                     reason or type(error).__name__,
                     error.phase,
-                    "started" if retry else "skipped budget" if eligible else "stopped",
-                    backoff if retry else 0.0,
+                    "started"
+                    if backoff is not None
+                    else "skipped budget"
+                    if skipped == "budget"
+                    else "stopped",
+                    None if backoff is not None else skipped,
+                    planned_backoff or 0.0,
                     remaining,
                     clock() - started,
+                    " -> ".join(type(cause).__name__ for cause in causes) or None,
+                    os_error.errno if os_error is not None else None,
+                    getattr(os_error, "winerror", None),
+                    error.status_code,
                 )
-                if not retry:
+                if backoff is None:
                     raise
                 if backoff:
                     await asyncio.sleep(backoff)
@@ -794,6 +929,7 @@ class Botslab360Client:
                 phase="authentication",
             )
 
+        self._check_status_cooldown()
         async with self._push_connection() as push:
             await self._request_status(device_id=device_id, task_id=task_id)
             return await push.wait_for_status(
@@ -1140,14 +1276,48 @@ class Botslab360Client:
             await self.authenticate()
             return await operation()
 
-    async def _request_status(self, *, device_id: str, task_id: str) -> None:
-        await self._post_robot_request(
-            device_id=device_id,
-            info_type=STATUS_INFO_TYPE,
-            data="",
-            task_id=task_id,
-            operation="robot status request",
+    def _check_status_cooldown(self) -> None:
+        if self._status_cooldown is None:
+            return
+        until, status_code = self._status_cooldown
+        remaining = until - asyncio.get_running_loop().time()
+        if remaining <= 0:
+            self._status_cooldown = None
+            return
+        _LOGGER.debug(
+            "Status cooldown: http_status=%d remaining_s=%.2f reason=retry_after",
+            status_code,
+            remaining,
         )
+        raise ApiError(
+            "Robot status request deferred by Retry-After",
+            status_code=status_code,
+            phase="http-cooldown",
+        )
+
+    async def _request_status(self, *, device_id: str, task_id: str) -> None:
+        # Another status request could have received Retry-After while this
+        # caller was establishing its push channel.
+        self._check_status_cooldown()
+        try:
+            await self._post_robot_request(
+                device_id=device_id,
+                info_type=STATUS_INFO_TYPE,
+                data="",
+                task_id=task_id,
+                operation="robot status request",
+            )
+        except ApiError as error:
+            if error.phase == "http" and error.status_code in (429, 503):
+                delay = _status_retry_after(_status_error_causes(error))
+                if delay is not None and delay > 0:
+                    until = asyncio.get_running_loop().time() + delay
+                    if (
+                        self._status_cooldown is None
+                        or until > self._status_cooldown[0]
+                    ):
+                        self._status_cooldown = (until, error.status_code)
+            raise
 
     async def _post_robot_request(
         self,

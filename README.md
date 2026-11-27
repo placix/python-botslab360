@@ -218,11 +218,31 @@ The total time budget includes TCP setup, profile fallback, HTTP, the status
 push, and any recovery. The library cancels outstanding work at the deadline
 and waits for cleanup, so the call may return after the deadline. A transient
 push registration timeout, remote EOF during registration, HTTP read timeout,
-or matching status push timeout can trigger recovery if the configured waits
-fit in the remaining budget. Registration failures wait 250 ms before the
-first retry. If the first retry reaches remote EOF before registration, one
-final attempt may follow a 500 ms delay. Session expiry uses a single recovery
-slot for reauthentication. Each attempt uses a fresh task ID and push channel.
+or matching status push timeout can trigger recovery. Supported transient
+socket errors, temporary DNS failures and HTTP 502/503/504 can also trigger
+recovery. Each retry must leave enough time for the configured waits. One
+status call makes at most three attempts in total. The delay depends on the
+current failure and whether it occurred on the first or second attempt:
+
+| Failure | Delay after attempt 1 | Delay after attempt 2 |
+| --- | --- | --- |
+| Push registration timeout | 250 ms | None |
+| EOF during push registration | 250 ms | 500 ms |
+| HTTP read or matching status push timeout | 0 seconds | None |
+| Eligible socket error, connect timeout or temporary DNS failure | 2 seconds | 5 seconds |
+| HTTP 502, 503 or 504 | 1 second | 3 seconds |
+| HTTP 429 with valid Retry-After | At least 1 second | None |
+
+A valid Retry-After value can extend the HTTP 503 delay. HTTP 429 requires a
+valid Retry-After value that fits the same budget for an immediate retry.
+A positive Retry-After on either response also sets an in-memory cooldown
+for status queries on the same client, across its robots. A later status
+query during the cooldown fails promptly without starting push or HTTP,
+even if it omits the optional budget. Commands and other clients are not
+subject to this status cooldown. HTTP 500 and permanent
+client, authentication and protocol failures stop immediately. Session
+expiry retains its single recovery slot for reauthentication. Each attempt
+uses a fresh task ID and push channel.
 Budgeted status calls on the same client are serialized, including recovery.
 Time spent waiting for another status call counts against the caller's budget.
 
@@ -247,8 +267,8 @@ plus cleanup. For entries with multiple robots, the coordinator currently
 polls them in sequence, so this per-robot budget can accumulate. Evaluate
 recovery rate and refresh latency before enabling it broadly.
 
-DEBUG logs from `botslab360.client` record attempts, retry decisions, delays
-and remaining budget. `botslab360.protocol` logs push cleanup duration. Deadline expiry raises `ApiError` with phase `timeout` and the
+DEBUG logs from `botslab360.client` record attempts, retry decisions, delays,
+remaining budget, exception type chains, socket errno and HTTP status. `botslab360.protocol` logs push cleanup duration. Deadline expiry raises `ApiError` with phase `timeout` and the
 fixed message `Status retrieval exceeded its total time budget`.
 
 
